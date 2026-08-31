@@ -4,8 +4,9 @@ Persistent memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 [Honcho](https://honcho.dev).
 
 `dsh` forgets everything when a session ends. This plugin gives it memory that doesn't: what you're building,
-how you like to work, what you decided last week and why. Memory is shared with the other Honcho integrations
-through one config file, so what Claude Code learns about you, `dsh` knows too.
+how you like to work, what you decided last week and why. It reads the same `~/.honcho/config.json` as the
+other Honcho integrations, so there is one place to configure all of them — and pointing two of them at the
+same `workspace` gives them one shared memory.
 
 ## Install
 
@@ -112,6 +113,21 @@ here, so it runs against the actual question instead of a turn-old snapshot.
 The plugin's own `cordis.yml` config carries plumbing only — `configPath`, `apiKeyRef`, `host`, `enabled`. Set
 `host` to run a credential-isolated profile (`"dsh_work"`) against the same install.
 
+### Sharing memory with other integrations
+
+Each integration defaults to its own Honcho `workspace` — `dsh` here, `claude_code` for claude-honcho — and a
+workspace is the isolation boundary, so **by default they do not see each other's memory.** Point them at the
+same `workspace` to merge them:
+
+```jsonc
+"hosts": {
+  "dsh":         { "workspace": "shared" },
+  "claude_code": { "workspace": "shared" }
+}
+```
+
+Keep `peerName` identical across them too, since conclusions are stored per peer.
+
 ### Sessions
 
 Default: one long-lived session per project directory, named `<peerName>-<dir>`, matching claude-honcho. Pin a
@@ -152,14 +168,6 @@ bun run typecheck
 bun run build
 ```
 
-`bunfig.toml` exempts `@deepseek-ai/*` and `@honcho-ai/*` from a machine-wide `minimumReleaseAge` gate, because
-dsh publishes prereleases daily and typing against an older version than users run defeats the point. Every
-version is pinned exactly, so nothing new is picked up without an explicit edit. Regenerate the list after
-adding a dsh dependency — the command is in the file.
-
-`src/core-shim.ts` is deliberately temporary — it stands in for the shared integration core (Linear DEV-2452)
-and gets deleted when that ships. Everything else imports config through it.
-
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point.
 
 ## Credit
@@ -169,8 +177,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind e
 
 The `~/.honcho/config.json` contract, the session-naming convention, and `src/redact.ts` come from the sibling
 Honcho integrations — [claude-honcho](https://github.com/plastic-labs/claude-honcho),
-[codex-honcho](https://github.com/plastic-labs/codex-honcho), and their relatives — which is also why memory
-written by one of them shows up in the others.
+[codex-honcho](https://github.com/plastic-labs/codex-honcho), and their relatives.
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) is MIT-licensed, and its
 [Cordis](https://github.com/cordiverse/cordis) plugin model is what made a native integration worth writing
