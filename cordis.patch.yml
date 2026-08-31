@@ -1,0 +1,34 @@
+# @honcho-ai/dsh-honcho bundle patch.
+#
+# Two rows: the plugin itself, and a skill-filesystem override that adds our
+# packaged skills directory to the roots it already scans.
+#
+# Behavioral configuration does NOT live here — it lives in ~/.honcho/config.json
+# under `hosts.dsh`, the file shared with claude-honcho, codex-honcho, and the
+# other Honcho integrations. This row carries plumbing only.
+
+- insert:
+    - id: honcho
+      name: '@honcho-ai/dsh-honcho'
+      config:
+        # Path override for the shared config file. Leave unset in normal use.
+        # configPath: ~/.honcho/config.json
+        #
+        # Credential reference resolved through ctx.credentials when a provider
+        # is mounted. Falls back to $HONCHO_API_KEY and then to the config file.
+        apiKeyRef: HONCHO_API_KEY
+        #
+        # Host key inside config.json. Change it to run a credential-isolated
+        # profile (e.g. `dsh_work`) against the same install.
+        host: dsh
+
+# NOTE: a patch replaces a row's whole `config`, so overriding skill-filesystem
+# means restating every key it needs. Uncomment and merge with your own roots if
+# you already override this row.
+#
+# - insert:
+#     - id: skill-filesystem
+#       name: '@deepseek-ai/dsh-skill-filesystem'
+#       config:
+#         customSkillDirs:
+#           - '<path to @honcho-ai/dsh-honcho>/skills'
