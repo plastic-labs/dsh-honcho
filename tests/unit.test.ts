@@ -3,7 +3,14 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { interpolateEnv, loadConfig, normalizeBaseUrl, sessionName, type ResolvedConfig } from "../src/core-shim.ts";
+import {
+  interpolateEnv,
+  loadConfig,
+  normalizeBaseUrl,
+  sessionName,
+  unsupportedComponents,
+  type ResolvedConfig,
+} from "../src/core-shim.ts";
 
 // HONCHO_API_KEY in the developer's own shell legitimately outranks the config
 // file (env is the top of the RFC resolution ladder), so these tests must run
@@ -17,8 +24,8 @@ beforeEach(() => {
 afterEach(() => {
   process.env = { ...SAVED_ENV };
 });
-import { isHarnessInjected, selectMessages } from "../src/capture.ts";
-import { assembleByPriority, filterRepresentation, trimObservations } from "../src/memory.ts";
+import { isHarnessInjected, selectMessages, summarizeTool } from "../src/capture.ts";
+import { assembleByPriority, filterRepresentation, renderMemory, trimObservations } from "../src/memory.ts";
 import { redactSecrets } from "../src/redact.ts";
 
 function writeConfig(contents: unknown): string {
@@ -99,9 +106,37 @@ describe("loadConfig", () => {
     expect(loadConfig({ configPath: path, host: "dsh" }).capture.saveMessages).toBe(true);
   });
 
-  test("an unimplemented sessionStrategy fails loudly rather than silently", () => {
-    const path = writeConfig({ ...base, hosts: { dsh: { sessionStrategy: "git-branch" } } });
-    expect(() => loadConfig({ configPath: path, host: "dsh" })).toThrow(/not implemented/);
+  test("an unknown sessionStrategy fails loudly rather than silently", () => {
+    const path = writeConfig({ ...base, hosts: { dsh: { sessionStrategy: "per-tuesday" } } });
+    expect(() => loadConfig({ configPath: path, host: "dsh" })).toThrow(/unknown sessionStrategy/);
+  });
+
+  test("a partial injection block does not wipe sibling defaults", () => {
+    const path = writeConfig({ ...base, hosts: { dsh: { injection: { searchTopK: 3 } } } });
+    const config = loadConfig({ configPath: path, host: "dsh" });
+    expect(config.injection.searchTopK).toBe(3);
+    expect(config.injection.maxConclusions).toBe(15);
+    // A nested object would be replaced wholesale by a naive spread.
+    expect(config.injection.cadence.ttlSeconds).toBe(300);
+  });
+
+  test("saveToolUse defaults off", () => {
+    expect(loadConfig({ configPath: writeConfig(base), host: "dsh" }).capture.saveToolUse).toBe(false);
+  });
+});
+
+describe("unsupportedComponents", () => {
+  test("names the components this plugin ignores, with a reason", () => {
+    const ignored = unsupportedComponents({
+      sessionStart: ["directives", "summary", "briefing"],
+      perTurn: ["userContext", "dialectic"],
+    } as ResolvedConfig["injection"]);
+    expect(ignored.map(([n]) => n).sort()).toEqual(["briefing", "dialectic"]);
+    expect(ignored.every(([, reason]) => reason.length > 10)).toBe(true);
+  });
+
+  test("a default config reports nothing ignored", () => {
+    expect(unsupportedComponents({ sessionStart: ["directives", "summary", "peerCard"], perTurn: ["userContext"] } as ResolvedConfig["injection"])).toEqual([]);
   });
 
   test("a missing config file yields defaults and no key, not a crash", () => {
@@ -115,6 +150,7 @@ describe("sessionName", () => {
   const config = {
     peerName: "Vineeth",
     sessionPeerPrefix: true,
+    sessionStrategy: "per-directory",
     sessions: {} as Record<string, string>,
   } as ResolvedConfig;
 
@@ -130,13 +166,75 @@ describe("sessionName", () => {
   test("prefix can be turned off", () => {
     expect(sessionName({ ...config, sessionPeerPrefix: false } as ResolvedConfig, "/a/dedenne")).toBe("dedenne");
   });
+
+  test("per-session keeps dsh's short ids distinct", () => {
+    const perSession = { ...config, sessionStrategy: "per-session" } as ResolvedConfig;
+    // dsh mints `session-<n>`; a fixed 8-char truncation would map every one of
+    // these to the same Honcho session.
+    expect(sessionName(perSession, "/a/dedenne", "session-1")).toBe("vineeth-chat-1");
+    expect(sessionName(perSession, "/a/dedenne", "session-2")).toBe("vineeth-chat-2");
+    expect(sessionName(perSession, "/a/dedenne", "session-17")).toBe("vineeth-chat-17");
+  });
+
+  test("per-session shortens a long opaque id", () => {
+    const perSession = { ...config, sessionStrategy: "per-session" } as ResolvedConfig;
+    const name = sessionName(perSession, "/a/dedenne", "0f8c2b1e-9a44-4d2e-b6f1-7c3a5e9d1b02");
+    expect(name).toBe("vineeth-chat-0f8c2b1e-9a44-4d");
+    expect(name.length).toBeLessThan(40);
+  });
+
+  test("per-session without an id falls back to the directory rather than inventing one", () => {
+    const perSession = { ...config, sessionStrategy: "per-session" } as ResolvedConfig;
+    expect(sessionName(perSession, "/a/dedenne")).toBe("vineeth-dedenne");
+  });
+
+  test("global collapses to the peer", () => {
+    expect(sessionName({ ...config, sessionStrategy: "global" } as ResolvedConfig, "/a/dedenne")).toBe("vineeth");
+  });
+
+  test("git-branch outside a repo collapses to per-directory, not a placeholder", () => {
+    const gitBranch = { ...config, sessionStrategy: "git-branch" } as ResolvedConfig;
+    // /tmp is not a git repo, so there is no branch to append.
+    expect(sessionName(gitBranch, "/tmp")).toBe("vineeth-tmp");
+  });
+
+  test("an override still wins under every strategy", () => {
+    const pinned = { ...config, sessionStrategy: "global", sessions: { "/repo": "pinned" } } as ResolvedConfig;
+    expect(sessionName(pinned, "/repo")).toBe("pinned");
+  });
+});
+
+describe("summarizeTool", () => {
+  test("records mutating shell commands", () => {
+    expect(summarizeTool("bash", { command: "pnpm run build" })).toBe("ran: pnpm run build");
+  });
+
+  test("skips read-only shell noise", () => {
+    for (const command of ["ls -la", "git status", "grep -rn foo .", "cat README.md"]) {
+      expect(summarizeTool("bash", { command })).toBe("");
+    }
+  });
+
+  test("never records honcho's own calls — that is circular", () => {
+    expect(summarizeTool("honcho_search", { query: "x" })).toBe("");
+    expect(summarizeTool("honcho_remember", { content: "x" })).toBe("");
+  });
+
+  test("names edited files but not read ones", () => {
+    expect(summarizeTool("write", { path: "/a/b.ts" })).toBe("edited: /a/b.ts");
+    expect(summarizeTool("read", { path: "/a/b.ts" })).toBe("");
+  });
+
+  test("falls back to the tool name", () => {
+    expect(summarizeTool("web_search", { query: "x" })).toBe("used web_search");
+  });
 });
 
 describe("selectMessages", () => {
   const config = {
     peerName: "vineeth",
     aiPeer: "dsh",
-    capture: { messageMaxChars: 1000, redactPatterns: [] as string[] },
+    capture: { messageMaxChars: 1000, redactPatterns: [] as string[], saveToolUse: false },
   } as ResolvedConfig;
 
   const userEvent = (text: string, kind = "user") => ({
@@ -175,6 +273,30 @@ describe("selectMessages", () => {
 
   test("empty and unknown events are skipped", () => {
     expect(selectMessages([{ type: "turn/start", data: {} }, userEvent("   ")], config)).toHaveLength(0);
+  });
+
+  test("tool calls are ignored unless saveToolUse is on", () => {
+    const call = { type: "tool/call", data: { name: "bash", arguments: JSON.stringify({ command: "pnpm build" }) } };
+    expect(selectMessages([call], config)).toHaveLength(0);
+
+    const withTools = { ...config, capture: { ...config.capture, saveToolUse: true } } as ResolvedConfig;
+    const selected = selectMessages([call], withTools);
+    expect(selected).toEqual([{ role: "assistant", content: "[tool] ran: pnpm build", peerId: "dsh" }]);
+  });
+
+  test("malformed logged tool arguments degrade instead of throwing", () => {
+    const withTools = { ...config, capture: { ...config.capture, saveToolUse: true } } as ResolvedConfig;
+    const call = { type: "tool/call", data: { name: "web_search", arguments: "{not json" } };
+    expect(selectMessages([call], withTools)[0]!.content).toBe("[tool] used web_search");
+  });
+
+  test("secrets in a captured command are redacted too", () => {
+    const withTools = { ...config, capture: { ...config.capture, saveToolUse: true } } as ResolvedConfig;
+    const call = {
+      type: "tool/call",
+      data: { name: "bash", arguments: JSON.stringify({ command: "deploy --token ghp_aaaaaaaaaaaaaaaaaaaaaaaa" }) },
+    };
+    expect(selectMessages([call], withTools)[0]!.content).not.toContain("ghp_aaaa");
   });
 });
 
@@ -227,6 +349,46 @@ describe("assembleByPriority", () => {
   test("everything fits when the budget allows", () => {
     const out = assembleByPriority({ "peer-card": "card", "session-summary": "sum" }, 1000);
     expect(out).toBe("card\n\nsum");
+  });
+});
+
+describe("renderMemory", () => {
+  const base = {
+    peerName: "vineeth",
+    injection: { sessionStart: ["directives", "summary", "peerCard", "representation"], reprMaxObs: 4, injectionMaxChars: 4000 },
+  } as unknown as ResolvedConfig;
+
+  const context = {
+    summary: { content: "Refactored the parser." },
+    peerCard: ["IDENTITY: Engineer"],
+    peerRepresentation: "[2026-08-31 10:00:00] Prefers bun.",
+  };
+
+  test("includes every configured component", () => {
+    const block = renderMemory(base, context, [])!;
+    expect(block.text).toContain("IDENTITY: Engineer");
+    expect(block.text).toContain("Refactored the parser.");
+    expect(block.text).toContain("Prefers bun.");
+  });
+
+  test("omits components the config leaves out", () => {
+    const cardOnly = { ...base, injection: { ...base.injection, sessionStart: ["directives", "peerCard"] } } as ResolvedConfig;
+    const block = renderMemory(cardOnly, context, [])!;
+    expect(block.text).toContain("IDENTITY: Engineer");
+    expect(block.text).not.toContain("Refactored the parser.");
+    expect(block.text).not.toContain("Prefers bun.");
+  });
+
+  test("returns null rather than an empty block when nothing is selected", () => {
+    const none = { ...base, injection: { ...base.injection, sessionStart: ["directives"] } } as ResolvedConfig;
+    // An empty runtime context would make dsh emit a visible "context: none" line.
+    expect(renderMemory(none, context, [])).toBeNull();
+    expect(renderMemory(base, null, [])).toBeNull();
+  });
+
+  test("partial-fetch warnings ride along as a comment", () => {
+    const block = renderMemory(base, context, ["card:timeout"])!;
+    expect(block.text).toContain("<!-- honcho: partial (card:timeout) -->");
   });
 });
 

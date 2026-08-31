@@ -23,7 +23,7 @@ import type {} from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-system-prompt";
 import type {} from "@deepseek-ai/dsh-session-query";
 import type {} from "@deepseek-ai/dsh-commands";
-import { loadConfig, sessionName, type ResolvedConfig } from "./core-shim.js";
+import { loadConfig, sessionName, unsupportedComponents, configPath, type ResolvedConfig } from "./core-shim.js";
 import { createGateway, type Gateway } from "./honcho.js";
 import { createCapture, type Capture } from "./capture.js";
 import { DIRECTIVES, renderMemory } from "./memory.js";
@@ -56,20 +56,29 @@ export const Config: Schema<Config> = Schema.object({
 });
 
 /** Section/context sort orders. dsh gained `getSectionOrder`/`getContextOrder`
- *  for centrally-owned placements after 0.1.1-rc.2; a plain number works on
- *  every version and nothing else competes for these slots. */
-const DIRECTIVES_ORDER = 500;
+ *  for centrally-owned placements after 0.1.1-rc.2, so plain numbers are used
+ *  instead — they work on every version. 650 sits between the harness's
+ *  TEAM_POLICY (600) and PTC_ONLY (800); 500 would collide with PLAN_POLICY. */
+const DIRECTIVES_ORDER = 650;
+/** Runtime contexts are centrally allocated only up to 120, so memory sorts
+ *  last among them, which is where the least policy-like content belongs. */
 const MEMORY_ORDER = 500;
+
+/** Name our runtime context registers under, and the key we look for in an
+ *  assembly to detect that the composition is dropping it. */
+const MEMORY_CONTEXT_NAME = "honcho:memory";
 
 /** How long turn 1 may wait for memory before proceeding without it.
  *  claude-honcho blocks EVERY turn for up to 120s; we block only the first,
  *  and only this long. */
 const FIRST_TURN_BUDGET_MS = 5_000;
-/** Re-fetch at most this often; later turns never block on it. */
-const REFRESH_TTL_MS = 300_000;
 
 interface AgentLike {
   session?: { id?: string; header?: { cwd?: string } };
+}
+
+function sessionOf(agent: AgentLike | undefined): [cwd: string | undefined, id: string | undefined] {
+  return [agent?.session?.header?.cwd, agent?.session?.id];
 }
 
 function textOf(messages: readonly { content?: unknown }[] | undefined): string {
@@ -117,7 +126,19 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   const honcho = createGateway(resolved);
-  const sessionNameFor = (cwd: string | undefined) => sessionName(resolved, cwd);
+  const sessionNameFor = (cwd: string | undefined, dshSessionId?: string) =>
+    sessionName(resolved, cwd, dshSessionId);
+
+  // Tell the user which configured components this plugin ignores, rather than
+  // silently honoring a subset of what their config asks for.
+  for (const [name, reason] of unsupportedComponents(resolved.injection)) {
+    log(`injection component "${name}" is ignored — ${reason}`);
+  }
+
+  const wantsDirectives = resolved.injection.sessionStart.includes("directives");
+  /** Without `userContext`, memory is fetched once and never refreshed. */
+  const wantsPerTurnRefresh = resolved.injection.perTurn.includes("userContext");
+  const refreshTtlMs = resolved.injection.cadence.ttlSeconds * 1_000;
 
   // ── capture ──────────────────────────────────────────────────────────────
 
@@ -129,7 +150,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (sessionQuery && resolved.capture.saveMessages) {
     capture = createCapture(resolved, {
       readSession: (id) => sessionQuery.readSession(id) as never,
-      honchoSessionName: sessionNameFor,
+      honchoSessionName: (cwd, dshSessionId) => sessionNameFor(cwd, dshSessionId),
       upload: (name, messages) => honcho.upload(name, messages),
       onError: (message) => log(`capture: ${message}`),
     });
@@ -143,12 +164,37 @@ export function apply(ctx: Context, config: Config = {}): void {
   let lastFetchAt: number | undefined;
   let lastFetchError: string | undefined;
   let refreshing: Promise<void> | undefined;
+  let suppressed = false;
 
-  ctx.systemPrompt.section({ name: "honcho:directives", order: DIRECTIVES_ORDER, text: DIRECTIVES });
+  if (wantsDirectives) {
+    ctx.systemPrompt.section({ name: "honcho:directives", order: DIRECTIVES_ORDER, text: DIRECTIVES });
+  }
 
-  async function refreshMemory(cwd: string | undefined, searchQuery: string): Promise<void> {
+  // A composition can drop every runtime context — `suppressRuntimeContext()`
+  // scope-wide, or `includeRuntimeContext: false` on the system-prompt plugin.
+  // Either way injection silently stops working, so watch an actual assembly
+  // rather than trusting that our registration is being honored.
+  ctx.on("system-prompt/assemble", async (assembly, _context, next) => {
+    const result = await next();
+    if (disposeMemory) {
+      const present = result.contexts.some((c) => c.name === MEMORY_CONTEXT_NAME);
+      if (!present && !suppressed) {
+        suppressed = true;
+        log("runtime context is suppressed by this composition — injected memory is not reaching the model.");
+      } else if (present && suppressed) {
+        suppressed = false;
+      }
+    }
+    return result;
+  });
+
+  async function refreshMemory(
+    cwd: string | undefined,
+    dshSessionId: string | undefined,
+    searchQuery: string,
+  ): Promise<void> {
     try {
-      const context = await honcho.fetchContext(cwd, searchQuery || undefined);
+      const context = await honcho.fetchContext(cwd, dshSessionId, searchQuery || undefined);
       const block = renderMemory(resolved, context, []);
       lastFetchAt = Date.now();
       lastFetchError = undefined;
@@ -157,7 +203,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       // something to register, so an empty runtime context — which dsh renders
       // as a visible "Current runtime context: none." line — cannot happen.
       const next = ctx.systemPrompt.context({
-        name: "honcho:memory",
+        name: MEMORY_CONTEXT_NAME,
         order: MEMORY_ORDER,
         text: block.text,
       });
@@ -174,7 +220,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on("agent/session-start", (payload: { agent: AgentLike }) => {
     // Emit, not awaited — so this only starts the write that materializes the
     // session. The read that turn 1 depends on happens in pre-step below.
-    void honcho.ensureSession(payload.agent.session?.header?.cwd).catch((e: unknown) => {
+    void honcho.ensureSession(...sessionOf(payload.agent)).catch((e: unknown) => {
       log(`session setup failed: ${e instanceof Error ? e.message : String(e)}`);
     });
   });
@@ -185,19 +231,19 @@ export function apply(ctx: Context, config: Config = {}): void {
       payload: { agent: AgentLike; messages?: readonly { content?: unknown }[]; step: number },
       next: () => Promise<PreStepDecision>,
     ): Promise<PreStepDecision> => {
-      const cwd = payload.agent.session?.header?.cwd;
+      const [cwd, id] = sessionOf(payload.agent);
       const query = textOf(payload.messages);
-      const stale = !lastFetchAt || Date.now() - lastFetchAt > REFRESH_TTL_MS;
+      const stale = !lastFetchAt || Date.now() - lastFetchAt > refreshTtlMs;
 
       if (!lastFetchAt && !lastFetchError) {
         // First request of the session: this waterfall is awaited, so it is the
         // only place memory can land BEFORE the model sees the prompt. Bounded,
         // and only paid once.
-        await withTimeout(refreshMemory(cwd, query), FIRST_TURN_BUDGET_MS);
-      } else if (stale && !refreshing) {
+        await withTimeout(refreshMemory(cwd, id, query), FIRST_TURN_BUDGET_MS);
+      } else if (wantsPerTurnRefresh && stale && !refreshing) {
         // Later turns never block. A turn either gets fresh memory or the
         // previous snapshot.
-        refreshing = refreshMemory(cwd, query).finally(() => {
+        refreshing = refreshMemory(cwd, id, query).finally(() => {
           refreshing = undefined;
         });
       }
@@ -248,6 +294,8 @@ export function apply(ctx: Context, config: Config = {}): void {
         lastFetchAt: () => lastFetchAt,
         lastFetchError: () => lastFetchError,
         injectionActive: () => disposeMemory !== undefined,
+        injectionSuppressed: () => suppressed,
+        configFile: () => configPath(config.configPath),
       }),
     );
   }
@@ -265,9 +313,17 @@ export function apply(ctx: Context, config: Config = {}): void {
   log(`ready — workspace ${resolved.workspace}, peer ${resolved.peerName}, ${resolved.observationMode}`);
 }
 
-/** `ctx.credentials` is an abstract seam that may be absent, and `resolve()` is
- *  async while config loading is not. We therefore read only the synchronous
- *  env layer here; a mounted provider's async layers are a Phase 2 concern. */
+/**
+ * `ctx.credentials` is an abstract seam that may be absent, and `resolve()` is
+ * async while config loading is synchronous — so only the env layer is read
+ * here. A mounted provider's other layers (its own store, `.env` files) are NOT
+ * consulted, which means a key that lives only there will not be found; set
+ * HONCHO_API_KEY or `auth.apiKey` instead.
+ *
+ * Closing that gap means making config resolution async, which belongs to the
+ * shared integration core this file stands in for rather than being worth
+ * restructuring the plugin around first.
+ */
 function readCredential(ctx: Context, ref: string | undefined): string | undefined {
   if (!ref) return undefined;
   const credentials = ctx.get("credentials");

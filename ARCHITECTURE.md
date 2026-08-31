@@ -34,6 +34,7 @@ Each behavior is a listener on one documented seam.
 | Fetch + register memory | `agent/pre-step` | waterfall | Awaited. The only seam that runs before the first model request. |
 | Capture user turns | `session/event` → `user/message` | emit | Filtered on `source.kind` — see below. |
 | Capture assistant turns | `session/event` → `assistant/message` | emit | Envelope is `{ turn, step, message }`. |
+| Capture tool activity | `session/event` → `tool/call` | emit | Under `capture.saveToolUse`; no extra listener, just a wider selection. |
 | Flush before context loss | `session/event` → `compaction/start` | emit | The lock brackets the whole operation. |
 | Flush at the turn boundary | `agent/turn-stopping` | serial | Awaited before the boundary commits. |
 | Final flush | `ctx.effect` disposer | — | See "Teardown". |
@@ -86,9 +87,16 @@ That removes three failure modes structurally rather than by guard:
 - **No sync/async impedance** — the callback form is unused.
 - **No stale-vs-fresh ambiguity** inside one assembly.
 
-Two constraints remain: all contributors join into **one** snapshot ordered by `order`, and
-`ctx.systemPrompt.suppressRuntimeContext()` lets a deployment or agent preset silently disable every runtime
-context scope-wide.
+Two constraints remain: all contributors join into **one** snapshot ordered by `order`, and a composition can
+drop runtime context entirely — `ctx.systemPrompt.suppressRuntimeContext()` scope-wide, or
+`includeRuntimeContext: false` on the system-prompt plugin. Either way injection silently stops working, so a
+`system-prompt/assemble` listener checks whether our context actually survived into a real assembly and warns
+once if it did not. `/honcho` reports it too.
+
+Section and context orders are plain numbers rather than `getSectionOrder`/`getContextOrder`, which do not
+exist in every supported dsh version. The directives section sits at 650, between the harness's `TEAM_POLICY`
+(600) and `PTC_ONLY` (800) — 500 would collide with `PLAN_POLICY`. Runtime contexts are centrally allocated
+only up to 120, so memory at 500 sorts last among them.
 
 ### Turn 1
 
@@ -123,6 +131,9 @@ One call. `session.context({ peerTarget, peerPerspective, representationOptions 
   evidence chain it still pays tokens for.
 - Parts are assembled under a character budget by priority — **peer card > session summary > representation** —
   whole or not at all, because a representation cut mid-observation is noise.
+- `injection.sessionStart` selects which parts appear at all, and `injection.perTurn` decides whether the
+  snapshot is refreshed as the conversation moves or pinned at session start. Components in the canonical
+  schema that this plugin does not implement are reported at startup instead of being silently dropped.
 
 ---
 
@@ -212,9 +223,15 @@ sessions line up across integrations. An explicit root `sessions[cwd]` entry alw
 `SessionHeader.cwd` is optional (`packages/core/session/src/types.ts:68`), so its absence falls back rather
 than assuming `process.cwd()` — dsh sessions can be remote or sandboxed.
 
-Only `per-directory` is implemented, and an unrecognized strategy throws at load rather than silently doing
-something else. Honcho's guidance is not to scope sessions too thin: the Deriver needs a single session to
-accumulate enough material to reason over, and both `git-branch` and `per-session` split a project's memory.
+All five canonical strategies are implemented — `per-directory`, `per-repo`, `git-branch`, `per-session`,
+`global` — and an unrecognized value throws at load rather than silently doing something else. Two details
+worth keeping: `git-branch` collapses to the per-directory name outside a repo or on a detached HEAD rather
+than inventing a placeholder that would fork memory; and `per-session` strips dsh's `session-` id prefix
+instead of truncating, because dsh mints ids as `session-<n>` and a fixed truncation maps every session to one
+name.
+
+Honcho's guidance is still not to scope sessions too thin: the Deriver needs a single session to accumulate
+enough material to reason over, and both `git-branch` and `per-session` split a project's memory.
 
 ---
 
@@ -254,7 +271,8 @@ src/memory.ts      fetch shaping: representation filter, priority assembly
 src/capture.ts     source filter, cursor, debounce, flush
 src/redact.ts      ported from claude-honcho
 src/tools.ts       three tools
-src/commands.ts    /honcho
+src/commands.ts    /honcho, /honcho config, /honcho flush
+src/git.ts         branch + repo root for session naming (core's job eventually)
 ```
 
 `core-shim.ts` is deliberately temporary. It stands in for the shared integration core's canonical config

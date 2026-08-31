@@ -114,25 +114,31 @@ export function assembleByPriority(parts: Partial<Record<PartKey, string>>, maxC
   return kept.join("\n\n");
 }
 
-/** Shape a context response into the block that gets injected, or null. */
+/**
+ * Shape a context response into the block that gets injected, or null.
+ *
+ * `injection.sessionStart` selects which parts appear. A user who only wants a
+ * profile sets `["directives", "peerCard"]` and pays for nothing else.
+ */
 export function renderMemory(
   config: ResolvedConfig,
   context: SessionContextResult | null,
   warnings: string[],
 ): MemoryBlock | null {
   if (!context) return null;
+  const wanted = new Set(config.injection.sessionStart);
   const parts: Partial<Record<PartKey, string>> = {};
 
-  if (context.peerCard?.length) {
+  if (wanted.has("peerCard") && context.peerCard?.length) {
     parts["peer-card"] = `[Profile: ${config.peerName}]\n${context.peerCard.join("\n")}`;
   }
 
   const summary = typeof context.summary === "string" ? context.summary : context.summary?.content;
-  if (summary?.trim()) {
+  if (wanted.has("summary") && summary?.trim()) {
     parts["session-summary"] = `[Session so far]\n${summary.trim()}`;
   }
 
-  if (context.peerRepresentation?.trim()) {
+  if (wanted.has("representation") && context.peerRepresentation?.trim()) {
     const filtered = filterRepresentation(context.peerRepresentation);
     const trimmed = trimObservations(filtered, config.injection.reprMaxObs);
     if (trimmed.trim()) parts["representation"] = `[What Honcho knows about ${config.peerName}]\n${trimmed.trim()}`;

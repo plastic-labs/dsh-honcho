@@ -19,9 +19,13 @@ const BATCH_LIMIT = 50;
 
 export interface Gateway extends HonchoGateway {
   /** One call: summary + representation + peer card, shaped for injection. */
-  fetchContext(cwd: string | undefined, searchQuery: string | undefined): Promise<SessionContextResult | null>;
+  fetchContext(
+    cwd: string | undefined,
+    dshSessionId: string | undefined,
+    searchQuery: string | undefined,
+  ): Promise<SessionContextResult | null>;
   /** Create the session and associate both peers. Idempotent per process. */
-  ensureSession(cwd: string | undefined): Promise<void>;
+  ensureSession(cwd: string | undefined, dshSessionId: string | undefined): Promise<void>;
   upload(sessionName: string, messages: CapturedMessage[]): Promise<void>;
 }
 
@@ -35,13 +39,13 @@ export function createGateway(config: ResolvedConfig): Gateway {
   /** The peer that acts. Unified → the user, observing themselves. */
   const activePeer = (): Promise<Peer> => (directional ? aiPeer() : userPeer());
 
-  const nameFor = (cwd: string | undefined): string => sessionName(config, cwd);
+  const nameFor = (cwd?: string, dshSessionId?: string): string => sessionName(config, cwd, dshSessionId);
 
   return {
     currentSessionName: nameFor,
 
-    async ensureSession(cwd) {
-      const name = nameFor(cwd);
+    async ensureSession(cwd, dshSessionId) {
+      const name = nameFor(cwd, dshSessionId);
       if (ensured.has(name)) return;
       const [session, user, ai] = await Promise.all([honcho.session(name), userPeer(), aiPeer()]);
       // addPeers materializes the session server-side and associates both peers.
@@ -49,9 +53,9 @@ export function createGateway(config: ResolvedConfig): Gateway {
       ensured.add(name);
     },
 
-    async fetchContext(cwd, searchQuery) {
+    async fetchContext(cwd, dshSessionId, searchQuery) {
       const [session, target, perspective] = await Promise.all([
-        honcho.session(nameFor(cwd)),
+        honcho.session(nameFor(cwd, dshSessionId)),
         userPeer(),
         directional ? aiPeer() : Promise.resolve(undefined),
       ]);

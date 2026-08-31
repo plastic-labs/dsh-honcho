@@ -20,8 +20,8 @@ Then put your API key and name in `~/.honcho/config.json`:
   "peerName": "your-name",
   "auth": { "apiKey": "${HONCHO_API_KEY}" },
   "hosts": {
-    "dsh": { "workspace": "dsh" }
-  }
+    "dsh": { "workspace": "dsh" },
+  },
 }
 ```
 
@@ -39,14 +39,13 @@ turn boundaries, before compaction, and on shutdown. Secrets are redacted first.
 
 **Gives the model three tools:**
 
-| Tool | For |
-|---|---|
-| `honcho_search` | Looking something up. Searches raw messages *and* derived conclusions. |
-| `honcho_chat` | Asking a question of judgment. Reasons over everything Honcho knows. Slow. |
-| `honcho_remember` | Saving a durable fact, preference, or decision. |
+| Tool              | For                                                                        |
+| ----------------- | -------------------------------------------------------------------------- |
+| `honcho_search`   | Looking something up. Searches raw messages _and_ derived conclusions.     |
+| `honcho_chat`     | Asking a question of judgment. Reasons over everything Honcho knows. Slow. |
+| `honcho_remember` | Saving a durable fact, preference, or decision.                            |
 
-**`/honcho`** shows status: peer, workspace, session, pending uploads, last successful sync, and a link to the
-session in the Honcho dashboard. **`/honcho flush`** syncs immediately.
+**`/honcho`** shows status and a link to the session in the Honcho dashboard — see Commands below.
 
 ## Configuration
 
@@ -58,50 +57,85 @@ behavior.
 {
   "peerName": "your-name",
   "workspace": "honcho",
-  "baseUrl": "https://api.honcho.dev",   // bare host or …/v3 both fine
+  "baseUrl": "https://api.honcho.dev", // bare host or …/v3 both fine
   "timeoutMs": 30000,
   "auth": { "apiKey": "${HONCHO_API_KEY}" },
-  "enabled": true,                        // global kill switch
+  "enabled": true, // global kill switch
   "sessions": { "/path/to/repo": "pinned-session-name" },
 
   "hosts": {
     "dsh": {
       "workspace": "dsh",
-      "aiPeer": "dsh",                    // defaults to the host name
-      "observationMode": "unified",        // unified | directional
-      "sessionStrategy": "per-directory",
-      "sessionPeerPrefix": true,           // session names are <peer>-<dir>
+      "aiPeer": "dsh", // defaults to the host name
+      "observationMode": "unified", // unified | directional
+      "sessionStrategy": "per-directory", // see Sessions below
+      "sessionPeerPrefix": true, // session names are <peer>-<dir>
       "injection": {
+        "sessionStart": ["directives", "summary", "peerCard"], // + representation
+        "perTurn": ["userContext"], // [] pins memory to the session-start snapshot
         "tools": true,
         "searchTopK": 10,
         "searchMaxDistance": 0.6,
         "maxConclusions": 15,
         "contextTokens": 1500,
         "injectionMaxChars": 4000,
-        "reprMaxObs": 4
+        "reprMaxObs": 4,
+        "cadence": { "ttlSeconds": 300 }, // how long a snapshot is reused
       },
       "capture": {
         "saveMessages": true,
-        "redactPatterns": [],              // additive to the built-in secret patterns
+        "saveToolUse": false, // one-line summaries of tool activity
+        "redactPatterns": [], // additive to the built-in secret patterns
         "debounceMs": 3000,
-        "messageMaxChars": 25000
-      }
-    }
-  }
+        "messageMaxChars": 25000,
+      },
+    },
+  },
 }
 ```
+
+### Injection components
+
+`injection.sessionStart` selects what appears in the injected block: `directives` (guidance on using memory),
+`summary`, `peerCard`, and `representation`. Drop what you don't want to pay for — `["directives", "peerCard"]`
+gives a profile and nothing else.
+
+`injection.perTurn` containing `userContext` re-fetches as you work, using your current message as the search
+query so recall is associative rather than merely recent. Set it to `[]` to fetch once at session start and
+never again.
+
+The canonical schema names components this plugin doesn't implement — `briefing`, `assistantContext`,
+`sessionContext`, and `dialectic`. Configuring one logs why it's ignored at startup rather than silently
+honoring a subset; `/honcho config` lists them too. `dialectic` is the notable one: it's the `honcho_chat` tool
+here, so it runs against the actual question instead of a turn-old snapshot.
 
 The plugin's own `cordis.yml` config carries plumbing only — `configPath`, `apiKeyRef`, `host`, `enabled`. Set
 `host` to run a credential-isolated profile (`"dsh_work"`) against the same install.
 
 ### Sessions
 
-One long-lived session per project directory, named `<peerName>-<dir>`, matching claude-honcho. Pin a
-different name for any path with the root `sessions` map.
+Default: one long-lived session per project directory, named `<peerName>-<dir>`, matching claude-honcho. Pin a
+different name for any path with the root `sessions` map — an override always wins.
 
-Honcho's guidance is not to scope sessions too thin — the background Deriver needs a single session to
-accumulate enough material to reason over, so per-branch and per-chat strategies are deliberately not
-implemented yet.
+| `sessionStrategy`         | Session name            | Notes                                                              |
+| ------------------------- | ----------------------- | ------------------------------------------------------------------ |
+| `per-directory` (default) | `<peer>-<dir>`          | Stable across restarts and branches                                |
+| `per-repo`                | `<peer>-<repo-root>`    | Same memory from any subdirectory                                  |
+| `git-branch`              | `<peer>-<dir>-<branch>` | Falls back to `per-directory` outside a repo or on a detached HEAD |
+| `per-session`             | `<peer>-chat-<id>`      | A clean slate every restart                                        |
+| `global`                  | `<peer>`                | One memory for everything                                          |
+
+**Prefer the wider scopes.** Honcho's guidance is not to scope sessions too thin: the background Deriver needs
+a single session to accumulate enough material before it can reason well. `git-branch` splits a project's
+memory per branch, and `per-session` discards it on every restart.
+
+## Commands
+
+| Command          | Does                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------- |
+| `/honcho`        | Status: peer, workspace, session, strategy, pending uploads, last sync, last fetch |
+| `/honcho config` | Resolved settings, the file they came from, and any ignored injection components   |
+| `/honcho flush`  | Sync now                                                                           |
 
 ## Requirements
 
@@ -131,13 +165,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind e
 ## Credit
 
 [**dsh-honcho-sync**](https://github.com/nanpaidashi/dsh-honcho-sync) by
-[@nanpaidashi](https://github.com/nanpaidashi) (MIT) got here first, and this plugin is better for it. Several
-things it worked out the hard way are reflected here: that `systemPrompt.context()` takes resolved text and
-returns a disposer rather than needing a cache behind a synchronous callback; that Honcho representations carry
-`Pattern [medium|low]` blocks and `Type:`/`Sources:`/`Premises:` provenance worth stripping before injection,
-with the character and observation budgets it tuned from live use; that recall has to reach conclusions and not
-just messages; and — after it shipped twenty-five tools and cut to four — that a small tool set beats a
-complete one. If you want a plugin that works against a self-hosted Honcho with no account, use theirs.
+[@nanpaidashi](https://github.com/nanpaidashi) (MIT) inspired the initial design of this plugin
 
 The `~/.honcho/config.json` contract, the session-naming convention, and `src/redact.ts` come from the sibling
 Honcho integrations — [claude-honcho](https://github.com/plastic-labs/claude-honcho),

@@ -7,7 +7,7 @@
  * exactly like a working plugin. This is where that becomes visible.
  */
 
-import { sessionUrl, type ResolvedConfig } from "./core-shim.js";
+import { sessionUrl, unsupportedComponents, type ResolvedConfig } from "./core-shim.js";
 import type { Capture } from "./capture.js";
 
 export interface CommandDeps {
@@ -19,6 +19,10 @@ export interface CommandDeps {
   /** Message from the last failed memory fetch, if the latest attempt failed. */
   lastFetchError(): string | undefined;
   injectionActive(): boolean;
+  /** True when a deployment or agent preset is suppressing runtime context. */
+  injectionSuppressed(): boolean;
+  /** Path the shared config file was read from. */
+  configFile(): string;
 }
 
 function ago(at: number | undefined): string {
@@ -39,8 +43,8 @@ export interface CommandDefinition {
 export function createCommand(config: ResolvedConfig, deps: CommandDeps): CommandDefinition {
   return {
     name: "honcho",
-    description: "Honcho memory status, or `flush` to sync this session now.",
-    input: { hint: "flush" },
+    description: "Honcho memory status. `config` shows resolved settings, `flush` syncs now.",
+    input: { hint: "config | flush" },
     async handler({ agent, rawInput }) {
       const sub = (rawInput ?? "").trim().toLowerCase();
       const cwd = deps.cwdOf(agent);
@@ -55,8 +59,26 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
         }
       }
 
+      if (sub === "config") {
+        // Resolved values, not per-key provenance: tracking the source layer for
+        // every key roughly doubles the resolver, and the file path plus the
+        // resolution order in the docs answers the same question.
+        const redacted = { ...config, apiKey: config.apiKey ? `${config.apiKey.slice(0, 7)}…` : "(unset)" };
+        const ignored = unsupportedComponents(config.injection);
+        const lines = [
+          `config file  ${deps.configFile()}`,
+          "",
+          JSON.stringify(redacted, null, 2),
+        ];
+        if (ignored.length) {
+          lines.push("", "ignored injection components:");
+          for (const [name, reason] of ignored) lines.push(`  ${name} — ${reason}`);
+        }
+        return { text: lines.join("\n") };
+      }
+
       if (sub && sub !== "status") {
-        return { text: `Unknown subcommand \`${sub}\`. Use \`/honcho\` or \`/honcho flush\`.` };
+        return { text: `Unknown subcommand \`${sub}\`. Use \`/honcho\`, \`/honcho config\`, or \`/honcho flush\`.` };
       }
 
       const fetchError = deps.lastFetchError();
@@ -67,9 +89,13 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
         `session      ${name}`,
         `endpoint     ${config.baseUrl}`,
         `observation  ${config.observationMode}`,
-        `capture      ${config.capture.saveMessages ? "on" : "off"} · ${deps.capture.pending()} pending · last sync ${ago(deps.capture.lastFlushedAt())}`,
+        `strategy     ${config.sessionStrategy}`,
+        `capture      ${config.capture.saveMessages ? "on" : "off"}${config.capture.saveToolUse ? " +tools" : ""} · ${deps.capture.pending()} pending · last sync ${ago(deps.capture.lastFlushedAt())}`,
         `injection    ${deps.injectionActive() ? "active" : "inactive"} · last fetch ${ago(deps.lastFetchAt())}`,
       ];
+      if (deps.injectionSuppressed()) {
+        lines.push("⚠ runtime context is suppressed by this composition — injected memory is not reaching the model");
+      }
       if (fetchError) lines.push(`⚠ last fetch failed: ${fetchError}`);
       if (!config.apiKey) lines.push("⚠ no API key — set HONCHO_API_KEY or auth.apiKey in ~/.honcho/config.json");
       lines.push("", sessionUrl(config.workspace, name));

@@ -20,7 +20,7 @@ export interface HonchoGateway {
   searchConclusions(query: string, limit: number): Promise<string[]>;
   /** Persist a durable fact about the user. */
   remember(content: string, sessionName: string): Promise<void>;
-  currentSessionName(cwd?: string): string;
+  currentSessionName(cwd?: string, dshSessionId?: string): string;
 }
 
 /** Shape accepted by `defineTool` from `@deepseek-ai/dsh-tools`. Declared
@@ -33,7 +33,11 @@ export interface ToolSpec {
     schema: Record<string, unknown>;
     render(args: unknown, value: { text: string }): { type: "text"; text: string }[];
   };
-  execute(args: Record<string, unknown>, exec: { agent?: { session?: { header?: { cwd?: string } } } }): Promise<{ text: string }>;
+  execute(args: Record<string, unknown>, exec: ToolExec): Promise<{ text: string }>;
+}
+
+interface ToolExec {
+  agent?: { session?: { id?: string; header?: { cwd?: string } } };
 }
 
 const textOutput = {
@@ -43,8 +47,8 @@ const textOutput = {
   render: (_args: unknown, value: { text: string }) => [{ type: "text" as const, text: value.text }],
 };
 
-function cwdOf(exec: { agent?: { session?: { header?: { cwd?: string } } } }): string | undefined {
-  return exec.agent?.session?.header?.cwd;
+function sessionOf(exec: ToolExec): [cwd: string | undefined, id: string | undefined] {
+  return [exec.agent?.session?.header?.cwd, exec.agent?.session?.id];
 }
 
 export function createTools(config: ResolvedConfig, honcho: HonchoGateway): ToolSpec[] {
@@ -83,7 +87,7 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
       },
       output: textOutput,
       async execute(args, exec) {
-        const sessionName = honcho.currentSessionName(cwdOf(exec));
+        const sessionName = honcho.currentSessionName(...sessionOf(exec));
         // observationMode decides who is asking about whom: unified queries the
         // user peer directly; directional asks from the AI peer's perspective.
         const targetPeerId = config.observationMode === "directional" ? config.peerName : undefined;
@@ -108,7 +112,7 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
         const content = String(args.content ?? "").trim();
         if (!content) return { text: "Nothing to remember — `content` was empty." };
         try {
-          await honcho.remember(content, honcho.currentSessionName(cwdOf(exec)));
+          await honcho.remember(content, honcho.currentSessionName(...sessionOf(exec)));
           return { text: "Saved to Honcho memory." };
         } catch (e) {
           return { text: `Could not save to Honcho: ${errText(e)}` };

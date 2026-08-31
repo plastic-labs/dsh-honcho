@@ -1,10 +1,10 @@
 /**
  * Canonical `~/.honcho/config.json` resolution + Honcho client factory.
  *
- * THIS FILE IS TEMPORARY. It stands in for integration core v0.2 (Linear
- * DEV-2452, "canonical config resolution and client factory"). When that ships,
- * delete this file and import the same shape from core. Everything else in this
- * plugin imports config through here so the swap is one import edit.
+ * THIS FILE IS TEMPORARY. It stands in for the shared integration core's
+ * canonical config resolution and client factory. When that ships, delete this
+ * file and import the same shape from core. Everything else in this plugin
+ * imports config through here so the swap is one import edit.
  *
  * Scope rule that keeps it deletable: we read legacy spellings ONLY for keys
  * that are still legal at root under the canonical shape — `apiKey` and
@@ -13,23 +13,51 @@
  * the part that would never get deleted (claude-honcho's config.ts is 1,014
  * lines, mostly for that reason).
  *
- * Spec: https://linear.app/plastic-labs/document/proposal-honchoconfigjson-ff54bd93cc93
  */
 
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { readFileSync } from "node:fs";
+import { currentBranch, repoRoot } from "./git.js";
 
 export const HOST_DEFAULT = "dsh";
 
 /** Coding-assistant bucket: two peers, the user models themselves. */
 export type ObservationMode = "unified" | "directional";
 
-/** v1 ships one strategy. `git-branch` and `per-session` are Phase 2, and are
- *  worth re-arguing first: Honcho's own guidance is "don't scope sessions too
- *  thin" — the Deriver needs a single session to accumulate enough tokens to
- *  reason, and both alternatives split a project's memory. */
-export type SessionStrategy = "per-directory";
+/**
+ * How a dsh session maps to a Honcho session.
+ *
+ * A caution that belongs with the type rather than the docs: Honcho's guidance
+ * is not to scope sessions too thin, because the background Deriver needs a
+ * single session to accumulate enough material to reason over. `git-branch` and
+ * `per-session` both split a project's memory, and `per-session` discards it
+ * every restart. `per-directory` is the default for that reason.
+ */
+export const SESSION_STRATEGIES = ["per-directory", "per-repo", "git-branch", "per-session", "global"] as const;
+export type SessionStrategy = (typeof SESSION_STRATEGIES)[number];
+
+/**
+ * Injection components, per the canonical config schema. Not all are meaningful
+ * in dsh; `unsupportedComponents()` reports which are ignored and why, so a
+ * user who configures one is told rather than left wondering.
+ */
+export const SESSION_START_COMPONENTS = ["directives", "summary", "peerCard", "representation", "briefing"] as const;
+export const PER_TURN_COMPONENTS = ["userContext", "assistantContext", "sessionContext", "dialectic"] as const;
+
+const UNSUPPORTED: Record<string, string> = {
+  briefing: "no MCP briefing tool in this plugin — session-start memory is injected directly",
+  assistantContext: "not implemented; it needs a second context() call for the AI peer",
+  sessionContext: "redundant in dsh — recent messages are already in the transcript",
+  dialectic: "exposed as the honcho_chat tool instead, so it runs against the actual question",
+};
+
+/** Configured components this plugin ignores, as `[name, reason]` pairs. */
+export function unsupportedComponents(injection: InjectionConfig): [string, string][] {
+  return [...injection.sessionStart, ...injection.perTurn]
+    .filter((c) => c in UNSUPPORTED)
+    .map((c) => [c, UNSUPPORTED[c] as string]);
+}
 
 export interface InjectionConfig {
   sessionStart: string[];
@@ -44,10 +72,17 @@ export interface InjectionConfig {
   injectionMaxChars: number;
   /** Observations kept from a representation after filtering. Same provenance. */
   reprMaxObs: number;
+  /** Only `ttlSeconds` has a consumer: how long an injected snapshot is reused
+   *  before a background refresh. The per-component counters in the canonical
+   *  schema are not implemented — nothing here fires on a turn count. */
+  cadence: { ttlSeconds: number };
 }
 
 export interface CaptureConfig {
   saveMessages: boolean;
+  /** Capture one-line summaries of tool activity (default false — low signal,
+   *  and largely restated by the assistant's own messages). */
+  saveToolUse: boolean;
   /** Additive to the built-in secret patterns in redact.ts. */
   redactPatterns: string[];
   /** Debounce before a flush, in ms. */
@@ -92,9 +127,11 @@ const BUILTIN = {
     contextTokens: 1500,
     injectionMaxChars: 4000,
     reprMaxObs: 4,
+    cadence: { ttlSeconds: 300 },
   } satisfies InjectionConfig,
   capture: {
     saveMessages: true,
+    saveToolUse: false,
     redactPatterns: [] as string[],
     debounceMs: 3_000,
     messageMaxChars: 25_000,
@@ -245,11 +282,11 @@ export function loadConfig(options: LoadOptions = {}): ResolvedConfig {
 
   const apiKey = process.env.HONCHO_API_KEY?.trim() || options.credential?.trim() || resolveApiKey(file, host);
 
-  const strategy = host?.sessionStrategy ?? BUILTIN.sessionStrategy;
-  if (strategy !== "per-directory") {
+  const strategy = (host?.sessionStrategy ?? BUILTIN.sessionStrategy) as SessionStrategy;
+  if (!SESSION_STRATEGIES.includes(strategy)) {
     throw new Error(
-      `[honcho] sessionStrategy ${JSON.stringify(strategy)} is not implemented yet — ` +
-        `v1 supports "per-directory" plus the root \`sessions\` override map.`,
+      `[honcho] unknown sessionStrategy ${JSON.stringify(strategy)} — ` +
+        `expected one of ${SESSION_STRATEGIES.join(", ")}.`,
     );
   }
 
@@ -266,7 +303,12 @@ export function loadConfig(options: LoadOptions = {}): ResolvedConfig {
     sessionStrategy: strategy,
     sessionPeerPrefix: host?.sessionPeerPrefix ?? BUILTIN.sessionPeerPrefix,
     sessions: file.sessions ?? {},
-    injection: { ...BUILTIN.injection, ...(host?.injection ?? {}) },
+    injection: {
+      ...BUILTIN.injection,
+      ...(host?.injection ?? {}),
+      // Nested objects would otherwise be replaced wholesale by a partial.
+      cadence: { ...BUILTIN.injection.cadence, ...(host?.injection?.cadence ?? {}) },
+    },
     capture: { ...BUILTIN.capture, ...(host?.capture ?? {}) },
   };
 }
@@ -278,18 +320,58 @@ function sanitize(value: string): string {
 }
 
 /**
- * `<peerName>-<dir>`, matching claude-honcho's `deriveSessionName`
- * (`plugins/honcho/src/config.ts:778`) so a user's sessions line up across
- * integrations. An explicit `sessions[cwd]` override always wins.
+ * Honcho session name. Prefix and shape follow claude-honcho's
+ * `deriveSessionName` (`plugins/honcho/src/config.ts:778`) so a user's sessions
+ * line up across integrations. An explicit `sessions[cwd]` override always wins.
+ *
+ * `dshSessionId` is only consulted by `per-session`; every other strategy is a
+ * pure function of `cwd` plus git state, which is what makes them stable across
+ * restarts.
  */
-export function sessionName(config: ResolvedConfig, cwd: string | undefined): string {
+export function sessionName(
+  config: ResolvedConfig,
+  cwd: string | undefined,
+  dshSessionId?: string,
+): string {
   if (cwd) {
     const override = config.sessions[cwd];
     if (override) return override;
   }
-  const dirPart = sanitize(cwd ? basename(cwd) : "unknown");
-  if (!config.sessionPeerPrefix) return dirPart;
-  return `${sanitize(config.peerName)}-${dirPart}`;
+
+  const peer = sanitize(config.peerName);
+  const prefix = (rest: string) => (config.sessionPeerPrefix ? `${peer}-${rest}` : rest);
+
+  switch (config.sessionStrategy) {
+    case "global":
+      return config.sessionPeerPrefix ? peer : "honcho";
+
+    case "per-repo": {
+      const root = cwd ? repoRoot(cwd) : undefined;
+      return prefix(sanitize(basename(root ?? cwd ?? "unknown")));
+    }
+
+    case "git-branch": {
+      const dir = sanitize(basename(cwd ?? "unknown"));
+      const branch = cwd ? currentBranch(cwd) : undefined;
+      // No branch (not a repo, detached HEAD) collapses to the per-directory
+      // name rather than inventing a placeholder that would fork memory.
+      return prefix(branch ? `${dir}-${sanitize(branch)}` : dir);
+    }
+
+    case "per-session": {
+      // dsh mints ids as `session-<n>` (SessionStore.create), so a fixed
+      // truncation would collapse every session to the same name. Strip the
+      // redundant prefix and keep the rest whole; only a long opaque id is
+      // shortened.
+      const raw = dshSessionId ? sanitize(dshSessionId).replace(/^session-/, "") : "";
+      const id = raw.length > 16 ? raw.slice(0, 16) : raw;
+      return id ? prefix(`chat-${id}`) : prefix(sanitize(basename(cwd ?? "unknown")));
+    }
+
+    case "per-directory":
+    default:
+      return prefix(sanitize(basename(cwd ?? "unknown")));
+  }
 }
 
 /** Deep link into the Honcho GUI. The web app lives at the production host
