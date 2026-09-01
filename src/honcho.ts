@@ -31,69 +31,37 @@ export interface Gateway extends HonchoGateway {
   upload(sessionName: string, messages: CapturedMessage[]): Promise<void>;
 }
 
-/**
- * Discard the SDK client if a call fails before any call has succeeded.
- *
- * `@honcho-ai/sdk` 2.4.0 memoizes its workspace get-or-create promise,
- * rejections included, so a failure at boot would poison every later call.
- * Every method awaits that promise first, so one success proves the client is
- * clean and later errors (a 400, a 404) leave it alone.
- */
-export function recovering<T extends object>(gateway: T, reset: () => void): T {
-  let proven = false;
-  let generation = 0;
-  const wrapped: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(gateway)) {
-    if (typeof value !== "function") {
-      wrapped[key] = value;
-      continue;
-    }
-    wrapped[key] = (...args: unknown[]) => {
-      const gen = generation;
-      const result = (value as (...a: unknown[]) => unknown).apply(gateway, args);
-      if (!(result instanceof Promise)) return result;
-      return result.then(
-        (v) => {
-          proven = true;
-          return v;
-        },
-        (e: unknown) => {
-          // Only the first failure on a given client resets it.
-          if (!proven && gen === generation) {
-            generation += 1;
-            reset();
-          }
-          throw e;
-        },
-      );
-    };
-  }
-  return wrapped as T;
-}
-
 export function createGateway(config: ResolvedConfig): Gateway {
-  let honcho = new Honcho(clientOptions(config));
   const directional = config.observationMode === "directional";
   const ensured = new Set<string>();
-  const reset = () => {
-    honcho = new Honcho(clientOptions(config));
-    ensured.clear();
+
+  /**
+   * `@honcho-ai/sdk` 2.4.0 caches its workspace get-or-create promise,
+   * rejections included, so a client whose first call failed is dead for the
+   * life of the process. Keep a client only once it has worked.
+   */
+  let honcho: Honcho | undefined;
+  const client = async (): Promise<Honcho> => {
+    if (honcho) return honcho;
+    const fresh = new Honcho(clientOptions(config));
+    await fresh.peer(config.peerName);
+    return (honcho = fresh);
   };
 
-  const userPeer = (): Promise<Peer> => honcho.peer(config.peerName);
-  const aiPeer = (): Promise<Peer> => honcho.peer(config.aiPeer);
+  const userPeer = async (): Promise<Peer> => (await client()).peer(config.peerName);
+  const aiPeer = async (): Promise<Peer> => (await client()).peer(config.aiPeer);
   /** The peer that acts. Unified → the user, observing themselves. */
   const activePeer = (): Promise<Peer> => (directional ? aiPeer() : userPeer());
 
   const nameFor = (cwd?: string, dshSessionId?: string): string => sessionName(config, cwd, dshSessionId);
 
-  const gateway: Gateway = {
+  return {
     currentSessionName: nameFor,
 
     async ensureSession(cwd, dshSessionId) {
       const name = nameFor(cwd, dshSessionId);
       if (ensured.has(name)) return;
-      const [session, user, ai] = await Promise.all([honcho.session(name), userPeer(), aiPeer()]);
+      const [session, user, ai] = await Promise.all([(await client()).session(name), userPeer(), aiPeer()]);
       // addPeers materializes the session server-side and associates both peers.
       await session.addPeers([user, ai]);
       ensured.add(name);
@@ -101,7 +69,7 @@ export function createGateway(config: ResolvedConfig): Gateway {
 
     async fetchContext(cwd, dshSessionId, searchQuery) {
       const [session, target, perspective] = await Promise.all([
-        honcho.session(nameFor(cwd, dshSessionId)),
+        (await client()).session(nameFor(cwd, dshSessionId)),
         userPeer(),
         directional ? aiPeer() : Promise.resolve(undefined),
       ]);
@@ -133,7 +101,7 @@ export function createGateway(config: ResolvedConfig): Gateway {
     },
 
     async upload(name, messages) {
-      const [session, user, ai] = await Promise.all([honcho.session(name), userPeer(), aiPeer()]);
+      const [session, user, ai] = await Promise.all([(await client()).session(name), userPeer(), aiPeer()]);
       const built = messages.map((m) => (m.role === "user" ? user : ai).message(m.content));
       for (let i = 0; i < built.length; i += BATCH_LIMIT) {
         await session.addMessages(built.slice(i, i + BATCH_LIMIT));
@@ -146,7 +114,7 @@ export function createGateway(config: ResolvedConfig): Gateway {
       const [peer, target, session] = await Promise.all([
         activePeer(),
         directional ? userPeer() : Promise.resolve(undefined),
-        honcho.session(nameFor(cwd, dshSessionId)),
+        (await client()).session(nameFor(cwd, dshSessionId)),
       ]);
       const answer = await peer.chat(query, {
         ...(target ? { target } : {}),
@@ -160,7 +128,7 @@ export function createGateway(config: ResolvedConfig): Gateway {
       const [peer, target, session] = await Promise.all([
         activePeer(),
         directional ? userPeer() : Promise.resolve(undefined),
-        options.sessionId ? honcho.session(options.sessionId) : Promise.resolve(undefined),
+        options.sessionId ? (await client()).session(options.sessionId) : Promise.resolve(undefined),
       ]);
       const answer = await peer.chat(query, {
         ...(target ? { target } : {}),
@@ -170,7 +138,7 @@ export function createGateway(config: ResolvedConfig): Gateway {
     },
 
     async searchMessages(query, limit) {
-      const results = await honcho.search(query, { limit });
+      const results = await (await client()).search(query, { limit });
       return results.map((r) => {
         const when = r.createdAt.slice(0, 16).replace("T", " ");
         return `[message ${r.peerId} ${when}] ${r.content.slice(0, 400)}`;
@@ -184,9 +152,8 @@ export function createGateway(config: ResolvedConfig): Gateway {
     },
 
     async remember(content, name) {
-      const [peer, session] = await Promise.all([activePeer(), honcho.session(name)]);
+      const [peer, session] = await Promise.all([activePeer(), (await client()).session(name)]);
       await peer.conclusionsOf(config.peerName).create({ content, sessionId: session.id });
     },
   };
-  return recovering(gateway, reset);
 }

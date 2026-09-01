@@ -579,7 +579,6 @@ describe("redactSecrets", () => {
 
 import { createCommand } from "../src/commands.ts";
 import { createCapture } from "../src/capture.ts";
-import { recovering } from "../src/honcho.ts";
 
 test("/honcho results carry the `kind` dsh's registry requires", async () => {
   const config = { injection: { sessionStart: [], perTurn: [] }, capture: {} } as unknown as ResolvedConfig;
@@ -606,17 +605,4 @@ test("flushAll rejects on a failed upload; dispose does not", async () => {
   await expect(capture.flushAll()).rejects.toThrow("fetch failed");
   expect(capture.lastError()).toBe("fetch failed");
   await expect(capture.dispose()).resolves.toBeUndefined();
-});
-
-test("recovering resets the client only before its first success", async () => {
-  let resets = 0;
-  let fail = true;
-  const gateway = recovering({ call: async () => { if (fail) throw new Error("nope"); } }, () => { resets += 1; });
-  await expect(gateway.call()).rejects.toThrow();
-  expect(resets).toBe(1);
-  fail = false;
-  await gateway.call();
-  fail = true;
-  await expect(gateway.call()).rejects.toThrow();
-  expect(resets).toBe(1);
 });
