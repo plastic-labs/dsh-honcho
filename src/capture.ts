@@ -112,8 +112,10 @@ export function isHarnessInjected(text: string): boolean {
  */
 export function selectMessages(events: readonly LogEvent[], config: ResolvedConfig): CapturedMessage[] {
   const out: CapturedMessage[] = [];
-  const cap = config.capture.messageMaxChars;
-  const patterns = config.capture.redactPatterns;
+  // Token budgets converted at the usual ~4 chars/token; the API is chars.
+  const userCap = config.messageUpload.maxUserTokens * 4;
+  const assistantCap = config.messageUpload.maxAssistantTokens * 4;
+  const patterns = config.capture.noisePatterns;
 
   for (const event of events) {
     if (!event?.data) continue;
@@ -123,7 +125,7 @@ export function selectMessages(events: readonly LogEvent[], config: ResolvedConf
       if (message.source?.kind !== "user") continue;
       const text = extractText(message.content);
       if (!text.trim() || isHarnessInjected(text)) continue;
-      out.push({ role: "user", content: redactSecrets(text.slice(0, cap), patterns), peerId: config.peerName });
+      out.push({ role: "user", content: redactSecrets(text.slice(0, userCap), patterns), peerId: config.peerName });
       continue;
     }
 
@@ -131,7 +133,7 @@ export function selectMessages(events: readonly LogEvent[], config: ResolvedConf
       const envelope = event.data as { message?: { content?: unknown } };
       const text = extractText(envelope.message?.content);
       if (!text.trim()) continue;
-      out.push({ role: "assistant", content: redactSecrets(text.slice(0, cap), patterns), peerId: config.aiPeer });
+      out.push({ role: "assistant", content: redactSecrets(text.slice(0, assistantCap), patterns), peerId: config.aiPeer });
       continue;
     }
 
@@ -151,7 +153,7 @@ export function selectMessages(events: readonly LogEvent[], config: ResolvedConf
       if (!summary) continue;
       out.push({
         role: "assistant",
-        content: redactSecrets(`[tool] ${summary}`.slice(0, cap), patterns),
+        content: redactSecrets(`[tool] ${summary}`.slice(0, assistantCap), patterns),
         peerId: config.aiPeer,
       });
     }
@@ -166,21 +168,62 @@ function cursorPath(): string {
   return join(dir, "dsh", "cursors.json");
 }
 
-type CursorFile = Record<string, number>;
+/**
+ * Keyed by **dsh session id**, not Honcho session name.
+ *
+ * Many dsh sessions map to one Honcho session — every `dsh --profile headless`
+ * invocation opens a new one, and so does each fresh chat in the same directory.
+ * Their event logs are independent and each starts at zero, so a counter shared
+ * across them compares run 2's event count against run 1's high-water mark and
+ * silently skips the whole run. The dsh session id is the only key under which
+ * "number of events already uploaded" means anything.
+ */
+interface CursorEntry {
+  count: number;
+  /** Epoch ms of the last write, for pruning. */
+  at: number;
+}
+
+type CursorFile = Record<string, CursorEntry>;
+
+/** Background flush delay. `writeFrequency: "sync"` bypasses it entirely, so
+ *  this is an implementation constant rather than another config knob. */
+const DEBOUNCE_MS = 3_000;
+
+/** Drop entries untouched for this long; a finished session never resumes. */
+const CURSOR_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function readCursors(path = cursorPath()): CursorFile {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-    return parsed && typeof parsed === "object" ? (parsed as CursorFile) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: CursorFile = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      // Tolerate the pre-TTL shape (a bare number) rather than losing the cursor
+      // and re-uploading a session's whole history.
+      if (typeof value === "number") out[key] = { count: value, at: Date.now() };
+      else if (value && typeof value === "object" && typeof (value as CursorEntry).count === "number") {
+        out[key] = value as CursorEntry;
+      }
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
-export function writeCursor(sessionName: string, count: number, path = cursorPath()): void {
+export function readCursor(dshSessionId: string, path = cursorPath()): number {
+  return readCursors(path)[dshSessionId]?.count ?? 0;
+}
+
+export function writeCursor(dshSessionId: string, count: number, path = cursorPath()): void {
   try {
     const cursors = readCursors(path);
-    cursors[sessionName] = count;
+    cursors[dshSessionId] = { count, at: Date.now() };
+    const cutoff = Date.now() - CURSOR_TTL_MS;
+    for (const [key, entry] of Object.entries(cursors)) {
+      if (key !== dshSessionId && entry.at < cutoff) delete cursors[key];
+    }
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(cursors, null, 2), { mode: 0o600 });
   } catch {
@@ -227,10 +270,11 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
 
     const snapshot = await deps.readSession(sessionId);
     const events = snapshot.events ?? [];
+    // Where to send (shared across dsh sessions) vs. how much of THIS session's
+    // log has already gone (per dsh session). Conflating the two drops turns.
     const name = deps.honchoSessionName(snapshot.session?.cwd, sessionId);
 
-    const cursors = readCursors();
-    const sent = cursors[name] ?? 0;
+    const sent = readCursor(sessionId);
     if (events.length <= sent) return;
 
     const slice = events.slice(sent);
@@ -239,14 +283,14 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
 
     if (messages.length === 0) {
       // Nothing worth sending, but these events are accounted for.
-      writeCursor(name, events.length);
+      writeCursor(sessionId, events.length);
       pendingCount = 0;
       return;
     }
 
     // Throws on failure → cursor stays put → the slice retries next flush.
     await deps.upload(name, messages);
-    writeCursor(name, events.length);
+    writeCursor(sessionId, events.length);
     lastFlushed = Date.now();
     pendingCount = 0;
   }
@@ -279,7 +323,7 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
         setTimeout(() => {
           timers.delete(sessionId);
           void guarded(sessionId);
-        }, config.capture.debounceMs),
+        }, config.capture.writeFrequency === "sync" ? 0 : DEBOUNCE_MS),
       );
     },
     flush(sessionId) {

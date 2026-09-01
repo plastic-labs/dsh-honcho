@@ -93,8 +93,8 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
       name: "honcho_chat",
       description:
         "Ask Honcho a reasoned question about the user, answered over everything it has learned across all " +
-        "sessions. Slower than honcho_search (often 30s+, occasionally minutes) — use for questions of " +
-        "judgment or preference, not for lookups.",
+        "sessions. Use for questions of judgment or preference — how they like to work, what they would " +
+        "prefer — rather than for looking up something that was said.",
       parameters: {
         query: {
           type: "string",

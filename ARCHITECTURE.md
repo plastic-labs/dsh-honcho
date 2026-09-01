@@ -162,8 +162,18 @@ lands in memory as something the user said.
 
 dsh already owns a durable, replayable session log, and `ctx.sessionQuery.readSession(id)` returns it
 (`packages/session-query/session-query/src/index.ts:165`). So there is no message queue: there is a **cursor**,
-an event count per Honcho session persisted to `~/.honcho/dsh/cursors.json` and advanced only after a
-successful upload. Each flush re-derives the unsent slice with `events.slice(sent)`.
+an event count persisted to `~/.honcho/dsh/cursors.json` and advanced only after a successful upload. Each
+flush re-derives the unsent slice with `events.slice(sent)`.
+
+**The cursor is keyed by dsh session id, not by Honcho session name**, and the distinction is load-bearing.
+Many dsh sessions map to one Honcho session: every `dsh --profile headless` invocation opens a new one, and so
+does each fresh chat in the same directory. Their event logs are independent and each starts at zero, so a
+counter shared across them compares the second run's event count against the first run's high-water mark and
+silently uploads nothing. Verified on a real VM — three headless runs in one directory produced three session
+logs (82, 90, and 66 events) all targeting the Honcho session `<peer>-<dir>`. Only the dsh session id is a key
+under which "events already uploaded" means anything; the Honcho session name is the upload *target*, nothing
+more. Entries are pruned after 14 days, and the older bare-number file shape is still read so an upgrade does
+not re-upload a session's whole history.
 
 Retry across network failure, crash durability, and torn-write tolerance all fall out of that, with no queue
 format to own. A failed upload leaves the cursor where it was, so the slice retries on the next flush.

@@ -72,8 +72,8 @@ export function filterRepresentation(text: string): string {
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** Keep the most recent `max` timestamped observations. */
-export function trimObservations(text: string, max: number): string {
+/** Keep the most recent `max` timestamped conclusions. */
+export function trimConclusions(text: string, max: number): string {
   if (!text || max <= 0) return text;
   const blocks: string[] = [];
   let current: string[] = [];
@@ -90,16 +90,16 @@ export function trimObservations(text: string, max: number): string {
   return blocks.slice(-max).join("\n");
 }
 
-type PartKey = "peer-card" | "session-summary" | "representation";
+type PartKey = "peer-card" | "session-summary" | "dialectic" | "representation";
 
 /** Highest-value first. */
-const PRIORITY: PartKey[] = ["peer-card", "session-summary", "representation"];
+const PRIORITY: PartKey[] = ["peer-card", "session-summary", "dialectic", "representation"];
 
 /**
  * Whole parts only. `dsh-honcho-sync` admits a part when at least half of it
  * fits and truncates the rest, but a representation cut mid-observation is
  * noise the model still pays tokens for — and a lower-priority fragment can
- * then crowd out nothing useful. `trimObservations` already bounds the largest
+ * then crowd out nothing useful. `trimConclusions` already bounds the largest
  * part before it gets here, so dropping whole is cheap.
  */
 export function assembleByPriority(parts: Partial<Record<PartKey, string>>, maxChars: number): string {
@@ -124,12 +124,35 @@ export function renderMemory(
   config: ResolvedConfig,
   context: SessionContextResult | null,
   warnings: string[],
+  /** Latest background dialectic answer, when one has resolved. */
+  dialectic?: string | null,
 ): MemoryBlock | null {
-  if (!context) return null;
+  if (!context && !dialectic) return null;
   const wanted = new Set(config.injection.sessionStart);
+  const perTurn = new Set(config.injection.perTurn);
+  // `userContext` is a CONTENT component, not a refresh flag: claude-honcho
+  // defines it as "a fresh, prompt-scoped peer.context() blob for the user
+  // peer", which is representation + peer card. So it contributes those two per
+  // turn regardless of the session-start menu — the two menus differ in cadence,
+  // not in what they can carry.
+  const wantsCard = wanted.has("peerCard") || perTurn.has("userContext");
+  const wantsRepresentation = wanted.has("representation") || perTurn.has("userContext");
   const parts: Partial<Record<PartKey, string>> = {};
 
-  if (wanted.has("peerCard") && context.peerCard?.length) {
+  // Dialectic is a per-turn component, so it is gated by `perTurn`, not by the
+  // session-start menu. It carries content when peer card and summary are still
+  // empty, which is the common state early in a workspace's life.
+  if (perTurn.has("dialectic") && dialectic?.trim()) {
+    parts["dialectic"] = `[What Honcho concludes about ${config.peerName}]\n${dialectic.trim()}`;
+  }
+  if (!context) {
+    const body = assembleByPriority(parts, config.injection.contextTokens * 4);
+    return body.trim()
+      ? { text: `<honcho-memory peer="${config.peerName}">\n${body}\n</honcho-memory>`, warnings }
+      : null;
+  }
+
+  if (wantsCard && context.peerCard?.length) {
     parts["peer-card"] = `[Profile: ${config.peerName}]\n${context.peerCard.join("\n")}`;
   }
 
@@ -138,13 +161,15 @@ export function renderMemory(
     parts["session-summary"] = `[Session so far]\n${summary.trim()}`;
   }
 
-  if (wanted.has("representation") && context.peerRepresentation?.trim()) {
+  if (wantsRepresentation && context.peerRepresentation?.trim()) {
     const filtered = filterRepresentation(context.peerRepresentation);
-    const trimmed = trimObservations(filtered, config.injection.reprMaxObs);
+    const trimmed = trimConclusions(filtered, config.injection.maxRenderedConclusions);
     if (trimmed.trim()) parts["representation"] = `[What Honcho knows about ${config.peerName}]\n${trimmed.trim()}`;
   }
 
-  const body = assembleByPriority(parts, config.injection.injectionMaxChars);
+  // The prompt budget follows the same number that bounds what Honcho returns,
+  // at the usual ~4 characters per token, rather than a second invented knob.
+  const body = assembleByPriority(parts, config.injection.contextTokens * 4);
   if (!body.trim()) return null;
 
   const note = warnings.length ? `\n<!-- honcho: partial (${warnings.join("; ")}) -->` : "";

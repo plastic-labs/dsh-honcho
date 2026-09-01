@@ -24,8 +24,8 @@ beforeEach(() => {
 afterEach(() => {
   process.env = { ...SAVED_ENV };
 });
-import { isHarnessInjected, selectMessages, summarizeTool } from "../src/capture.ts";
-import { assembleByPriority, filterRepresentation, renderMemory, trimObservations } from "../src/memory.ts";
+import { isHarnessInjected, readCursor, selectMessages, summarizeTool, writeCursor } from "../src/capture.ts";
+import { assembleByPriority, filterRepresentation, renderMemory, trimConclusions } from "../src/memory.ts";
 import { redactSecrets } from "../src/redact.ts";
 
 function writeConfig(contents: unknown): string {
@@ -129,14 +129,37 @@ describe("unsupportedComponents", () => {
   test("names the components this plugin ignores, with a reason", () => {
     const ignored = unsupportedComponents({
       sessionStart: ["directives", "summary", "briefing"],
-      perTurn: ["userContext", "dialectic"],
+      perTurn: ["userContext", "sessionContext"],
+      dialectic: { depth: 2 },
     } as ResolvedConfig["injection"]);
-    expect(ignored.map(([n]) => n).sort()).toEqual(["briefing", "dialectic"]);
+    expect(ignored.map(([n]) => n).sort()).toEqual(["briefing", "sessionContext"]);
     expect(ignored.every(([, reason]) => reason.length > 10)).toBe(true);
   });
 
+  test("dialectic is implemented, so it is NOT reported as ignored", () => {
+    const ignored = unsupportedComponents({
+      sessionStart: ["directives"],
+      perTurn: ["userContext", "dialectic"],
+      dialectic: { depth: 2 },
+    } as ResolvedConfig["injection"]);
+    expect(ignored).toEqual([]);
+  });
+
+  test("a non-default dialectic depth is reported, since Honcho has no such parameter", () => {
+    const ignored = unsupportedComponents({
+      sessionStart: [],
+      perTurn: ["dialectic"],
+      dialectic: { depth: 5 },
+    } as ResolvedConfig["injection"]);
+    expect(ignored.map(([n]) => n)).toEqual(["injection.dialectic.depth"]);
+  });
+
   test("a default config reports nothing ignored", () => {
-    expect(unsupportedComponents({ sessionStart: ["directives", "summary", "peerCard"], perTurn: ["userContext"] } as ResolvedConfig["injection"])).toEqual([]);
+    expect(unsupportedComponents({
+      sessionStart: ["directives", "summary", "peerCard"],
+      perTurn: ["userContext", "dialectic"],
+      dialectic: { depth: 2 },
+    } as ResolvedConfig["injection"])).toEqual([]);
   });
 
   test("a missing config file yields defaults and no key, not a crash", () => {
@@ -234,7 +257,8 @@ describe("selectMessages", () => {
   const config = {
     peerName: "vineeth",
     aiPeer: "dsh",
-    capture: { messageMaxChars: 1000, redactPatterns: [] as string[], saveToolUse: false },
+    capture: { noisePatterns: [] as string[], saveToolUse: false, writeFrequency: "async" },
+    messageUpload: { maxUserTokens: 250, maxAssistantTokens: 250 },
   } as ResolvedConfig;
 
   const userEvent = (text: string, kind = "user") => ({
@@ -300,6 +324,87 @@ describe("selectMessages", () => {
   });
 });
 
+describe("cursors", () => {
+  // The bug this guards: the cursor was keyed by HONCHO session name while
+  // counting events in a DSH session log. Every `dsh --profile headless` run
+  // opens a new dsh session with its own log starting at zero, and many dsh
+  // sessions map to one Honcho session — so run 2 compared its own event count
+  // against run 1's high-water mark and silently uploaded nothing.
+  function tmpCursorFile(): string {
+    return join(mkdtempSync(join(tmpdir(), "dsh-cursor-")), "cursors.json");
+  }
+
+  test("two dsh sessions sharing one Honcho session keep independent cursors", () => {
+    const path = tmpCursorFile();
+    writeCursor("session-aaa", 40, path);
+    // A second dsh session in the same directory starts fresh.
+    expect(readCursor("session-bbb", path)).toBe(0);
+    expect(readCursor("session-aaa", path)).toBe(40);
+  });
+
+  test("a cursor round-trips and advances", () => {
+    const path = tmpCursorFile();
+    expect(readCursor("s1", path)).toBe(0);
+    writeCursor("s1", 12, path);
+    expect(readCursor("s1", path)).toBe(12);
+    writeCursor("s1", 30, path);
+    expect(readCursor("s1", path)).toBe(30);
+  });
+
+  test("the pre-TTL bare-number shape still reads, rather than re-uploading history", () => {
+    const path = tmpCursorFile();
+    writeFileSync(path, JSON.stringify({ "session-legacy": 17 }));
+    expect(readCursor("session-legacy", path)).toBe(17);
+  });
+
+  test("a missing or corrupt file reads as zero instead of throwing", () => {
+    expect(readCursor("s", "/nonexistent/cursors.json")).toBe(0);
+    const path = tmpCursorFile();
+    writeFileSync(path, "{not json");
+    expect(readCursor("s", path)).toBe(0);
+  });
+});
+
+describe("dialectic injection", () => {
+  const base = {
+    peerName: "vineeth",
+    injection: {
+      sessionStart: ["directives", "summary", "peerCard"],
+      perTurn: ["userContext", "dialectic"],
+      maxRenderedConclusions: 4,
+      contextTokens: 1500,
+    },
+  } as unknown as ResolvedConfig;
+
+  test("carries content when peer card and summary are both empty", () => {
+    // The state that made injection unreachable before: a workspace with a
+    // representation but no card and no summary injected nothing at all.
+    const block = renderMemory(base, { summary: null, peerCard: null, peerRepresentation: null }, [], "Prefers bun.");
+    expect(block).not.toBeNull();
+    expect(block!.text).toContain("Prefers bun.");
+  });
+
+  test("is gated by perTurn, not by the session-start menu", () => {
+    const off = { ...base, injection: { ...base.injection, perTurn: ["userContext"] } } as ResolvedConfig;
+    expect(renderMemory(off, { summary: null, peerCard: null, peerRepresentation: null }, [], "Prefers bun.")).toBeNull();
+  });
+
+  test("still returns null when there is genuinely nothing", () => {
+    expect(renderMemory(base, null, [], null)).toBeNull();
+    expect(renderMemory(base, null, [], "   ")).toBeNull();
+  });
+
+  test("sorts below the peer card but above the representation", () => {
+    const block = renderMemory(
+      base,
+      { summary: null, peerCard: ["IDENTITY: Engineer"], peerRepresentation: null },
+      [],
+      "Prefers bun.",
+    )!;
+    expect(block.text.indexOf("IDENTITY: Engineer")).toBeLessThan(block.text.indexOf("Prefers bun."));
+  });
+});
+
 describe("filterRepresentation", () => {
   test("drops medium/low patterns and all provenance, keeps high claims", () => {
     const raw = [
@@ -327,10 +432,10 @@ describe("filterRepresentation", () => {
   });
 });
 
-describe("trimObservations", () => {
+describe("trimConclusions", () => {
   test("keeps the most recent N timestamped blocks", () => {
     const raw = ["[2026-01-01] one", "[2026-01-02] two", "[2026-01-03] three"].join("\n");
-    expect(trimObservations(raw, 2)).toBe("[2026-01-02] two\n[2026-01-03] three");
+    expect(trimConclusions(raw, 2)).toBe("[2026-01-02] two\n[2026-01-03] three");
   });
 });
 
@@ -355,7 +460,12 @@ describe("assembleByPriority", () => {
 describe("renderMemory", () => {
   const base = {
     peerName: "vineeth",
-    injection: { sessionStart: ["directives", "summary", "peerCard", "representation"], reprMaxObs: 4, injectionMaxChars: 4000 },
+    injection: {
+      sessionStart: ["directives", "summary", "peerCard", "representation"],
+      perTurn: ["userContext"],
+      maxRenderedConclusions: 4,
+      contextTokens: 1500,
+    },
   } as unknown as ResolvedConfig;
 
   const context = {
@@ -372,15 +482,38 @@ describe("renderMemory", () => {
   });
 
   test("omits components the config leaves out", () => {
-    const cardOnly = { ...base, injection: { ...base.injection, sessionStart: ["directives", "peerCard"] } } as ResolvedConfig;
+    // perTurn emptied too: `userContext` is a content component and would
+    // otherwise contribute the card and representation on its own.
+    const cardOnly = {
+      ...base,
+      injection: { ...base.injection, sessionStart: ["directives", "peerCard"], perTurn: [] },
+    } as ResolvedConfig;
     const block = renderMemory(cardOnly, context, [])!;
     expect(block.text).toContain("IDENTITY: Engineer");
     expect(block.text).not.toContain("Refactored the parser.");
     expect(block.text).not.toContain("Prefers bun.");
   });
 
+  test("perTurn userContext carries representation + card on its own", () => {
+    // claude-honcho defines userContext as "a fresh, prompt-scoped peer.context()
+    // blob" — representation and card. Gating those on sessionStart alone is what
+    // made injection unreachable in a workspace with no card and no summary.
+    const perTurnOnly = {
+      ...base,
+      injection: { ...base.injection, sessionStart: ["directives"], perTurn: ["userContext"] },
+    } as ResolvedConfig;
+    const block = renderMemory(perTurnOnly, context, [])!;
+    expect(block.text).toContain("IDENTITY: Engineer");
+    expect(block.text).toContain("Prefers bun.");
+    // summary belongs to the session-start menu only.
+    expect(block.text).not.toContain("Refactored the parser.");
+  });
+
   test("returns null rather than an empty block when nothing is selected", () => {
-    const none = { ...base, injection: { ...base.injection, sessionStart: ["directives"] } } as ResolvedConfig;
+    const none = {
+      ...base,
+      injection: { ...base.injection, sessionStart: ["directives"], perTurn: [] },
+    } as ResolvedConfig;
     // An empty runtime context would make dsh emit a visible "context: none" line.
     expect(renderMemory(none, context, [])).toBeNull();
     expect(renderMemory(base, null, [])).toBeNull();

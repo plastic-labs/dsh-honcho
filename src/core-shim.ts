@@ -49,14 +49,20 @@ const UNSUPPORTED: Record<string, string> = {
   briefing: "no MCP briefing tool in this plugin — session-start memory is injected directly",
   assistantContext: "not implemented; it needs a second context() call for the AI peer",
   sessionContext: "redundant in dsh — recent messages are already in the transcript",
-  dialectic: "exposed as the honcho_chat tool instead, so it runs against the actual question",
 };
 
-/** Configured components this plugin ignores, as `[name, reason]` pairs. */
+/** Configured components and options this plugin ignores, as `[name, reason]`. */
 export function unsupportedComponents(injection: InjectionConfig): [string, string][] {
-  return [...injection.sessionStart, ...injection.perTurn]
+  const out: [string, string][] = [...injection.sessionStart, ...injection.perTurn]
     .filter((c) => c in UNSUPPORTED)
     .map((c) => [c, UNSUPPORTED[c] as string]);
+  if (injection.perTurn.includes("dialectic") && injection.dialectic.depth !== 2) {
+    out.push([
+      "injection.dialectic.depth",
+      "Honcho's DialecticOptions has no depth parameter, so this value has no effect",
+    ]);
+  }
+  return out;
 }
 
 export interface InjectionConfig {
@@ -67,28 +73,55 @@ export interface InjectionConfig {
   searchMaxDistance: number;
   maxConclusions: number;
   contextTokens: number;
-  /** Character cap on the assembled injection block. Lowered from 8000 by
-   *  dsh-honcho-sync after live use; treat as a starting value. */
-  injectionMaxChars: number;
-  /** Observations kept from a representation after filtering. Same provenance. */
-  reprMaxObs: number;
-  /** Only `ttlSeconds` has a consumer: how long an injected snapshot is reused
-   *  before a background refresh. The per-component counters in the canonical
-   *  schema are not implemented — nothing here fires on a turn count. */
-  cadence: { ttlSeconds: number };
+  /** How many conclusions survive client-side filtering into the prompt.
+   *  Distinct from `maxConclusions`, which bounds what Honcho RETURNS: this
+   *  bounds what is left after medium/low patterns and provenance are stripped,
+   *  a layer the server's token budget cannot see. A dsh-honcho extension
+   *  proposed for the canonical schema, not yet in it. */
+  maxRenderedConclusions: number;
+  /** `userContext` and `dialectic` are turn counts: refresh that component
+   *  every Nth turn. `ttlSeconds` bounds how long any snapshot is reused. */
+  cadence: { userContext: number; dialectic: number; ttlSeconds: number };
+  /** Shape of the periodic background dialectic. */
+  dialectic: DialecticConfig;
+}
+
+export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "max"] as const;
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+export interface DialecticConfig {
+  /** Query sent to `peer.chat()`. `%{user_query}` is replaced with the user's
+   *  current message; a template without it is a standing question. */
+  template: string;
+  /** Honcho reasoning tier. `low` keeps a periodic background call affordable. */
+  reasoning: ReasoningLevel;
+  /** Accepted for canonical-schema compatibility and NOT implemented: Honcho's
+   *  DialecticOptions has no depth parameter (session_id, filters, scope,
+   *  target, query, stream, reasoning_level, response_format). Kept so a shared
+   *  config does not fail to load; a non-default value is reported at startup. */
+  depth: number;
+  /** Hard cap on injected characters — this bounds the prompt, not the spend. */
+  maxChars: number;
 }
 
 export interface CaptureConfig {
   saveMessages: boolean;
   /** Capture one-line summaries of tool activity (default false — low signal,
-   *  and largely restated by the assistant's own messages). */
+   *  and largely restated by the assistant's own messages). A dsh-honcho
+   *  extension proposed for the canonical schema, not yet in it. */
   saveToolUse: boolean;
-  /** Additive to the built-in secret patterns in redact.ts. */
-  redactPatterns: string[];
-  /** Debounce before a flush, in ms. */
-  debounceMs: number;
-  /** Per-message character cap on upload. */
-  messageMaxChars: number;
+  /** `async` buffers and flushes in the background; `sync` flushes inline at
+   *  each turn boundary. */
+  writeFrequency: "async" | "sync";
+  /** Content matching these is dropped before capture, additive to the
+   *  built-in secret patterns in redact.ts. */
+  noisePatterns: string[];
+}
+
+/** Per-message upload limits, matching claude-honcho's block of the same name. */
+export interface MessageUploadConfig {
+  maxUserTokens: number;
+  maxAssistantTokens: number;
 }
 
 export interface ResolvedConfig {
@@ -105,6 +138,7 @@ export interface ResolvedConfig {
   sessions: Record<string, string>;
   injection: InjectionConfig;
   capture: CaptureConfig;
+  messageUpload: MessageUploadConfig;
 }
 
 /** The SDK builds `/v3/...` paths itself (`dist/client.js:122`), so a base URL
@@ -119,23 +153,36 @@ const BUILTIN = {
   sessionPeerPrefix: true,
   injection: {
     sessionStart: ["directives", "summary", "peerCard"],
-    perTurn: ["userContext"],
+    perTurn: ["userContext", "dialectic"],
     tools: true,
     searchTopK: 10,
     searchMaxDistance: 0.6,
     maxConclusions: 15,
     contextTokens: 1500,
-    injectionMaxChars: 4000,
-    reprMaxObs: 4,
-    cadence: { ttlSeconds: 300 },
+    maxRenderedConclusions: 4,
+    // Matches hermes: a periodic background profile refresh, not a per-turn
+    // answer. At cadence 5 the lateness is the design.
+    cadence: { userContext: 1, dialectic: 5, ttlSeconds: 300 },
+    dialectic: {
+      template:
+        "In two or three sentences, what should I know about this user to work with them well? " +
+        "Durable preferences, current projects, working style. Third person, factual, no questions.",
+      reasoning: "low",
+      depth: 2,
+      maxChars: 600,
+    },
   } satisfies InjectionConfig,
   capture: {
     saveMessages: true,
     saveToolUse: false,
-    redactPatterns: [] as string[],
-    debounceMs: 3_000,
-    messageMaxChars: 25_000,
+    writeFrequency: "async" as const,
+    noisePatterns: [] as string[],
   } satisfies CaptureConfig,
+  messageUpload: {
+    // ~25k characters at the usual 4 chars/token, matching the previous cap.
+    maxUserTokens: 6_000,
+    maxAssistantTokens: 6_000,
+  } satisfies MessageUploadConfig,
 };
 
 /** Coding bucket → unified. The multi-user bucket defaults to directional. */
@@ -151,8 +198,12 @@ interface HostBlock {
   observationMode?: ObservationMode;
   sessionStrategy?: string;
   sessionPeerPrefix?: boolean;
+  /** The RFC places pinned session names in the HOST block. Root is read as a
+   *  fallback so an existing file keeps working, but the host is authoritative. */
+  sessions?: Record<string, string>;
   injection?: Partial<InjectionConfig>;
   capture?: Partial<CaptureConfig>;
+  messageUpload?: Partial<MessageUploadConfig>;
 }
 
 interface FileConfig {
@@ -302,14 +353,17 @@ export function loadConfig(options: LoadOptions = {}): ResolvedConfig {
     observationMode: host?.observationMode ?? BUCKET_OBSERVATION,
     sessionStrategy: strategy,
     sessionPeerPrefix: host?.sessionPeerPrefix ?? BUILTIN.sessionPeerPrefix,
-    sessions: file.sessions ?? {},
+    // Host block wins; root is a fallback for files written before the split.
+    sessions: host?.sessions ?? file.sessions ?? {},
     injection: {
       ...BUILTIN.injection,
       ...(host?.injection ?? {}),
       // Nested objects would otherwise be replaced wholesale by a partial.
       cadence: { ...BUILTIN.injection.cadence, ...(host?.injection?.cadence ?? {}) },
+      dialectic: { ...BUILTIN.injection.dialectic, ...(host?.injection?.dialectic ?? {}) },
     },
     capture: { ...BUILTIN.capture, ...(host?.capture ?? {}) },
+    messageUpload: { ...BUILTIN.messageUpload, ...(host?.messageUpload ?? {}) },
   };
 }
 

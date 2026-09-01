@@ -138,6 +138,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const wantsDirectives = resolved.injection.sessionStart.includes("directives");
   /** Without `userContext`, memory is fetched once and never refreshed. */
   const wantsPerTurnRefresh = resolved.injection.perTurn.includes("userContext");
+  const wantsDialectic = resolved.injection.perTurn.includes("dialectic");
   const refreshTtlMs = resolved.injection.cadence.ttlSeconds * 1_000;
 
   // ── capture ──────────────────────────────────────────────────────────────
@@ -197,6 +198,11 @@ export function apply(ctx: Context, config: Config = {}): void {
   let lastFetchError: string | undefined;
   let refreshing: Promise<void> | undefined;
   let suppressed = false;
+  /** Latest resolved background dialectic, and the guards around producing it. */
+  let dialecticText: string | null = null;
+  let dialecticInFlight = false;
+  let turnCount = 0;
+  let lastContext: Awaited<ReturnType<typeof honcho.fetchContext>> = null;
 
   if (wantsDirectives) {
     ctx.systemPrompt.section({ name: "honcho:directives", order: DIRECTIVES_ORDER, text: DIRECTIVES });
@@ -227,26 +233,70 @@ export function apply(ctx: Context, config: Config = {}): void {
   ): Promise<void> {
     try {
       const context = await honcho.fetchContext(cwd, dshSessionId, searchQuery || undefined);
-      const block = renderMemory(resolved, context, []);
+      lastContext = context;
+      const block = renderMemory(resolved, context, [], dialecticText);
       lastFetchAt = Date.now();
       lastFetchError = undefined;
-      if (!block) return;
+      if (!block) {
+        // Silence here was untraceable: a fetch that succeeds but renders
+        // nothing looked identical to one that never ran.
+        log(
+          `no memory to inject (card=${context?.peerCard?.length ?? 0} ` +
+            `summary=${context?.summary ? "y" : "n"} ` +
+            `repr=${context?.peerRepresentation?.length ?? 0} chars ` +
+            `dialectic=${dialecticText ? "y" : "n"})`,
+        );
+        return;
+      }
+      log(`injected ${block.text.length} chars of memory`);
       // Register the RESOLVED text. Nothing is registered until there is
       // something to register, so an empty runtime context — which dsh renders
       // as a visible "Current runtime context: none." line — cannot happen.
-      const next = ctx.systemPrompt.context({
+      // Dispose BEFORE registering: dsh rejects a duplicate context name within
+      // a layer, so register-then-swap throws on every refresh after the first.
+      disposeMemory?.();
+      disposeMemory = ctx.systemPrompt.context({
         name: MEMORY_CONTEXT_NAME,
         order: MEMORY_ORDER,
         text: block.text,
       });
-      disposeMemory?.();
-      disposeMemory = next;
     } catch (e) {
       lastFetchError = e instanceof Error ? e.message : String(e);
       // Keep the previous registration: stale memory beats none. The failure is
       // visible in `/honcho`, which is why that line exists.
       log(`memory fetch failed: ${lastFetchError}`);
     }
+  }
+
+  /** Re-render from the last fetch, so a late dialectic reaches the prompt
+   *  without paying for another context() call. */
+  function rerender(): void {
+    const block = renderMemory(resolved, lastContext, [], dialecticText);
+    if (!block) return;
+    disposeMemory?.();
+    disposeMemory = ctx.systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_ORDER, text: block.text });
+  }
+
+  /** Fire-and-forget: the dialectic is minutes-slow, so nothing ever waits on
+   *  it. At cadence N it is a periodic profile refresh, not an answer to the
+   *  current message — which is why arriving a turn late is acceptable here and
+   *  would not be at cadence 1. */
+  function maybeDialectic(cwd: string | undefined, id: string | undefined, query: string): void {
+    if (!wantsDialectic || dialecticInFlight) return;
+    const every = Math.max(1, resolved.injection.cadence.dialectic);
+    if (turnCount % every !== 1 % every) return;
+    dialecticInFlight = true;
+    void honcho
+      .backgroundDialectic(cwd, id, query)
+      .then((answer) => {
+        if (!answer) return;
+        dialecticText = answer;
+        rerender();
+      })
+      .catch((e: unknown) => log(`dialectic failed: ${e instanceof Error ? e.message : String(e)}`))
+      .finally(() => {
+        dialecticInFlight = false;
+      });
   }
 
   ctx.on("agent/session-start", (payload: { agent: AgentLike }) => {
@@ -266,6 +316,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       const [cwd, id] = sessionOf(payload.agent);
       const query = textOf(payload.messages);
       const stale = !lastFetchAt || Date.now() - lastFetchAt > refreshTtlMs;
+      turnCount += 1;
+      maybeDialectic(cwd, id, query);
 
       if (!lastFetchAt && !lastFetchError) {
         // First request of the session: this waterfall is awaited, so it is the

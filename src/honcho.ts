@@ -24,6 +24,8 @@ export interface Gateway extends HonchoGateway {
     dshSessionId: string | undefined,
     searchQuery: string | undefined,
   ): Promise<SessionContextResult | null>;
+  /** The periodic background dialectic, shaped by `injection.dialectic`. */
+  backgroundDialectic(cwd: string | undefined, dshSessionId: string | undefined, userQuery: string): Promise<string>;
   /** Create the session and associate both peers. Idempotent per process. */
   ensureSession(cwd: string | undefined, dshSessionId: string | undefined): Promise<void>;
   upload(sessionName: string, messages: CapturedMessage[]): Promise<void>;
@@ -92,6 +94,22 @@ export function createGateway(config: ResolvedConfig): Gateway {
       for (let i = 0; i < built.length; i += BATCH_LIMIT) {
         await session.addMessages(built.slice(i, i + BATCH_LIMIT));
       }
+    },
+
+    async backgroundDialectic(cwd, dshSessionId, userQuery) {
+      const cfg = config.injection.dialectic;
+      const query = cfg.template.replace(/%\{user_query\}/g, userQuery);
+      const [peer, target, session] = await Promise.all([
+        activePeer(),
+        directional ? userPeer() : Promise.resolve(undefined),
+        honcho.session(nameFor(cwd, dshSessionId)),
+      ]);
+      const answer = await peer.chat(query, {
+        ...(target ? { target } : {}),
+        session,
+        reasoningLevel: cfg.reasoning,
+      });
+      return (answer ?? "").trim().slice(0, cfg.maxChars);
     },
 
     async chat(query, options) {
