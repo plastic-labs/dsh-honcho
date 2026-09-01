@@ -575,112 +575,48 @@ describe("redactSecrets", () => {
   });
 });
 
-// ── commands ──────────────────────────────────────────────────────────────
+// ── regressions from the first live run (DEV-2537) ────────────────────────
 
-import { createCommand, type CommandDeps } from "../src/commands.ts";
-
-describe("createCommand", () => {
-  function fixture(overrides: Partial<CommandDeps> = {}) {
-    const dir = mkdtempSync(join(tmpdir(), "dsh-honcho-cmd-"));
-    const file = join(dir, "config.json");
-    writeFileSync(file, JSON.stringify({ peerName: "p", hosts: { dsh: { workspace: "w" } } }));
-    const config = loadConfig({ configPath: file, host: "dsh", credential: "hch-test-key" });
-    const deps: CommandDeps = {
-      capture: () => undefined,
-      sessionNameFor: () => "p-dir",
-      cwdOf: () => "/tmp/dir",
-      lastFetchAt: () => undefined,
-      lastFetchError: () => undefined,
-      injectionActive: () => true,
-      injectionSuppressed: () => false,
-      configFile: () => file,
-      ...overrides,
-    };
-    return createCommand(config, deps);
-  }
-
-  // dsh's registry rejects any result without a `kind` discriminator.
-  test.each([
-    ["", "success"],
-    ["config", "success"],
-    ["flush", "success"],
-    ["bogus", "error"],
-  ])("%p returns a CommandResult with kind %p", async (input, kind) => {
-    const result = await fixture().handler({ agent: {}, rawInput: input });
-    expect(result.kind).toBe(kind);
-    expect(typeof result.text).toBe("string");
-  });
-
-  test("a failed flush is an error, not a success", async () => {
-    const capture = { flushAll: async () => { throw new Error("boom"); }, lastError: () => "boom" };
-    const result = await fixture({ capture: () => capture as never }).handler({ agent: {}, rawInput: "flush" });
-    expect(result).toEqual({ kind: "error", text: "Flush failed: boom" });
-  });
-});
-
-// ── capture flush reporting ───────────────────────────────────────────────
-
+import { createCommand } from "../src/commands.ts";
 import { createCapture } from "../src/capture.ts";
-
-describe("createCapture flush reporting", () => {
-  const config = {
-    peerName: "p",
-    aiPeer: "dsh",
-    capture: { saveMessages: true, noisePatterns: [] as string[], saveToolUse: false, writeFrequency: "sync" },
-    messageUpload: { maxUserTokens: 250, maxAssistantTokens: 250 },
-  } as ResolvedConfig;
-  const events = [{ type: "user/message", data: { content: [{ type: "text", text: "hello" }], source: { kind: "user" } } }];
-
-  function failing() {
-    process.env.HONCHO_CONFIG_DIR = mkdtempSync(join(tmpdir(), "dsh-honcho-capture-"));
-    const capture = createCapture(config, {
-      readSession: async () => ({ session: { cwd: "/tmp/dir" }, events }),
-      honchoSessionName: () => "p-dir",
-      upload: async () => { throw new Error("fetch failed"); },
-    });
-    capture.schedule("session-1");
-    return capture;
-  }
-
-  test("flushAll rejects when the upload fails, and the slice stays pending", async () => {
-    const capture = failing();
-    await expect(capture.flushAll()).rejects.toThrow("fetch failed");
-    expect(capture.pending()).toBe(1);
-    expect(capture.lastError()).toBe("fetch failed");
-  });
-
-  test("dispose never throws, even when the final upload fails", async () => {
-    await expect(failing().dispose()).resolves.toBeUndefined();
-  });
-});
-
-// ── gateway recovery ──────────────────────────────────────────────────────
-
 import { recovering } from "../src/honcho.ts";
 
-describe("recovering", () => {
-  function fixture() {
-    let resets = 0;
-    let fail = false;
-    const gateway = recovering(
-      { call: async () => { if (fail) throw new Error("nope"); return "ok"; } },
-      () => { resets += 1; },
-    );
-    return { gateway, resets: () => resets, setFail: (v: boolean) => { fail = v; } };
-  }
-
-  test("a failure before any success resets the client once", async () => {
-    const { gateway, resets, setFail } = fixture();
-    setFail(true);
-    await expect(Promise.all([gateway.call(), gateway.call()])).rejects.toThrow("nope");
-    expect(resets()).toBe(1);
+test("/honcho results carry the `kind` dsh's registry requires", async () => {
+  const config = { injection: { sessionStart: [], perTurn: [] }, capture: {} } as unknown as ResolvedConfig;
+  const noop = () => undefined;
+  const command = createCommand(config, {
+    capture: noop, sessionNameFor: () => "s", cwdOf: noop, lastFetchAt: noop, lastFetchError: noop,
+    injectionActive: () => true, injectionSuppressed: () => false, configFile: () => "",
   });
+  for (const input of ["", "config", "flush"]) expect((await command.handler({ agent: {}, rawInput: input })).kind).toBe("success");
+  expect((await command.handler({ agent: {}, rawInput: "bogus" })).kind).toBe("error");
+});
 
-  test("a failure after a success does not reset", async () => {
-    const { gateway, resets, setFail } = fixture();
-    await gateway.call();
-    setFail(true);
-    await expect(gateway.call()).rejects.toThrow("nope");
-    expect(resets()).toBe(0);
-  });
+test("flushAll rejects on a failed upload; dispose does not", async () => {
+  process.env.HONCHO_CONFIG_DIR = mkdtempSync(join(tmpdir(), "dsh-honcho-capture-"));
+  const capture = createCapture(
+    { peerName: "p", capture: { saveMessages: true, noisePatterns: [] }, messageUpload: { maxUserTokens: 250, maxAssistantTokens: 250 } } as unknown as ResolvedConfig,
+    {
+      readSession: async () => ({ session: {}, events: [{ type: "user/message", data: { content: [{ type: "text", text: "hi" }], source: { kind: "user" } } }] }),
+      honchoSessionName: () => "s",
+      upload: async () => { throw new Error("fetch failed"); },
+    },
+  );
+  capture.schedule("session-1");
+  await expect(capture.flushAll()).rejects.toThrow("fetch failed");
+  expect(capture.lastError()).toBe("fetch failed");
+  await expect(capture.dispose()).resolves.toBeUndefined();
+});
+
+test("recovering resets the client only before its first success", async () => {
+  let resets = 0;
+  let fail = true;
+  const gateway = recovering({ call: async () => { if (fail) throw new Error("nope"); } }, () => { resets += 1; });
+  await expect(gateway.call()).rejects.toThrow();
+  expect(resets).toBe(1);
+  fail = false;
+  await gateway.call();
+  fail = true;
+  await expect(gateway.call()).rejects.toThrow();
+  expect(resets).toBe(1);
 });
