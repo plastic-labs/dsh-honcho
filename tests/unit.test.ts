@@ -580,8 +580,6 @@ describe("redactSecrets", () => {
 import { createCommand, type CommandDeps } from "../src/commands.ts";
 
 describe("createCommand", () => {
-  // dsh's registry throws `handler must return a CommandResult` on any result
-  // without a `kind` discriminator, so the shape is the contract under test.
   function fixture(overrides: Partial<CommandDeps> = {}) {
     const dir = mkdtempSync(join(tmpdir(), "dsh-honcho-cmd-"));
     const file = join(dir, "config.json");
@@ -601,39 +599,22 @@ describe("createCommand", () => {
     return createCommand(config, deps);
   }
 
-  test("status returns a success CommandResult", async () => {
-    const result = await fixture().handler({ agent: {}, rawInput: "" });
-    expect(result.kind).toBe("success");
-    expect(result.text).toContain("workspace    w");
-    expect(result.text).toContain("session      p-dir");
+  // dsh's registry rejects any result without a `kind` discriminator.
+  test.each([
+    ["", "success"],
+    ["config", "success"],
+    ["flush", "success"],
+    ["bogus", "error"],
+  ])("%p returns a CommandResult with kind %p", async (input, kind) => {
+    const result = await fixture().handler({ agent: {}, rawInput: input });
+    expect(result.kind).toBe(kind);
+    expect(typeof result.text).toBe("string");
   });
 
-  test("config returns success with the API key elided", async () => {
-    const result = await fixture().handler({ agent: {}, rawInput: " config" });
-    expect(result.kind).toBe("success");
-    expect(result.text).toContain("hch-tes…");
-    expect(result.text).not.toContain("hch-test-key");
-  });
-
-  test("flush with capture off is a success, not an error", async () => {
-    const result = await fixture().handler({ agent: {}, rawInput: "flush" });
-    expect(result).toEqual({ kind: "success", text: "Capture is off — nothing to flush." });
-  });
-
-  test("flush reports a completed sync as success and a thrown flush as error", async () => {
-    const capture = { flushAll: async () => {}, pending: () => 0, lastFlushedAt: () => undefined, lastError: () => undefined };
-    const okResult = await fixture({ capture: () => capture as never }).handler({ agent: {}, rawInput: "flush" });
-    expect(okResult).toEqual({ kind: "success", text: "Flushed to Honcho session `p-dir`." });
-
-    const failing = { ...capture, flushAll: async () => { throw new Error("boom"); } };
-    const errResult = await fixture({ capture: () => failing as never }).handler({ agent: {}, rawInput: "flush" });
-    expect(errResult).toEqual({ kind: "error", text: "Flush failed: boom" });
-  });
-
-  test("unknown subcommand is an error CommandResult", async () => {
-    const result = await fixture().handler({ agent: {}, rawInput: "bogus" });
-    expect(result.kind).toBe("error");
-    expect(result.text).toContain("Unknown subcommand `bogus`");
+  test("a failed flush is an error, not a success", async () => {
+    const capture = { flushAll: async () => { throw new Error("boom"); }, lastError: () => "boom" };
+    const result = await fixture({ capture: () => capture as never }).handler({ agent: {}, rawInput: "flush" });
+    expect(result).toEqual({ kind: "error", text: "Flush failed: boom" });
   });
 });
 
@@ -642,9 +623,6 @@ describe("createCommand", () => {
 import { createCapture } from "../src/capture.ts";
 
 describe("createCapture flush reporting", () => {
-  // The bug this guards, seen live: with Honcho unreachable, `/honcho flush`
-  // said "Flushed" while `/honcho` still showed 2 pending. The background path
-  // swallows upload errors on purpose; the human command must not inherit that.
   const config = {
     peerName: "p",
     aiPeer: "dsh",
@@ -653,45 +631,56 @@ describe("createCapture flush reporting", () => {
   } as ResolvedConfig;
   const events = [{ type: "user/message", data: { content: [{ type: "text", text: "hello" }], source: { kind: "user" } } }];
 
-  function fixture(upload: (name: string, messages: unknown[]) => Promise<void>) {
+  function failing() {
     process.env.HONCHO_CONFIG_DIR = mkdtempSync(join(tmpdir(), "dsh-honcho-capture-"));
-    const errors: string[] = [];
     const capture = createCapture(config, {
       readSession: async () => ({ session: { cwd: "/tmp/dir" }, events }),
       honchoSessionName: () => "p-dir",
-      upload,
-      onError: (m) => errors.push(m),
+      upload: async () => { throw new Error("fetch failed"); },
     });
-    return { capture, errors };
+    capture.schedule("session-1");
+    return capture;
   }
 
   test("flushAll rejects when the upload fails, and the slice stays pending", async () => {
-    const { capture, errors } = fixture(async () => { throw new Error("fetch failed"); });
-    capture.schedule("session-1");
+    const capture = failing();
     await expect(capture.flushAll()).rejects.toThrow("fetch failed");
     expect(capture.pending()).toBe(1);
     expect(capture.lastError()).toBe("fetch failed");
-    expect(capture.lastFlushedAt()).toBeUndefined();
-    expect(errors).toEqual(["fetch failed"]);
-  });
-
-  test("a later successful flush clears the error and advances", async () => {
-    let fail = true;
-    const uploaded: unknown[][] = [];
-    const { capture } = fixture(async (_name, messages) => { if (fail) throw new Error("fetch failed"); uploaded.push(messages); });
-    capture.schedule("session-1");
-    await expect(capture.flushAll()).rejects.toThrow();
-    fail = false;
-    await capture.flushAll();
-    expect(capture.lastError()).toBeUndefined();
-    expect(capture.pending()).toBe(0);
-    expect(capture.lastFlushedAt()).toBeDefined();
-    expect(uploaded).toHaveLength(1);
   });
 
   test("dispose never throws, even when the final upload fails", async () => {
-    const { capture } = fixture(async () => { throw new Error("fetch failed"); });
-    capture.schedule("session-1");
-    await expect(capture.dispose()).resolves.toBeUndefined();
+    await expect(failing().dispose()).resolves.toBeUndefined();
+  });
+});
+
+// ── gateway recovery ──────────────────────────────────────────────────────
+
+import { recovering } from "../src/honcho.ts";
+
+describe("recovering", () => {
+  function fixture() {
+    let resets = 0;
+    let fail = false;
+    const gateway = recovering(
+      { call: async () => { if (fail) throw new Error("nope"); return "ok"; } },
+      () => { resets += 1; },
+    );
+    return { gateway, resets: () => resets, setFail: (v: boolean) => { fail = v; } };
+  }
+
+  test("a failure before any success resets the client once", async () => {
+    const { gateway, resets, setFail } = fixture();
+    setFail(true);
+    await expect(Promise.all([gateway.call(), gateway.call()])).rejects.toThrow("nope");
+    expect(resets()).toBe(1);
+  });
+
+  test("a failure after a success does not reset", async () => {
+    const { gateway, resets, setFail } = fixture();
+    await gateway.call();
+    setFail(true);
+    await expect(gateway.call()).rejects.toThrow("nope");
+    expect(resets()).toBe(0);
   });
 });

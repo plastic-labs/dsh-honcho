@@ -32,25 +32,41 @@ export interface Gateway extends HonchoGateway {
 }
 
 /**
- * Discard the SDK client after any failed call.
+ * Discard the SDK client if a call fails before any call has succeeded.
  *
  * `@honcho-ai/sdk` 2.4.0 memoizes its workspace get-or-create promise,
- * rejections included, so one failure at boot would poison every later call.
+ * rejections included, so a failure at boot would poison every later call.
+ * Every method awaits that promise first, so one success proves the client is
+ * clean and later errors (a 400, a 404) leave it alone.
  */
-function recovering<T extends object>(gateway: T, reset: () => void): T {
+export function recovering<T extends object>(gateway: T, reset: () => void): T {
+  let proven = false;
+  let generation = 0;
   const wrapped: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(gateway)) {
-    wrapped[key] =
-      typeof value === "function"
-        ? (...args: unknown[]) => {
-            const result = (value as (...a: unknown[]) => unknown).apply(gateway, args);
-            if (!(result instanceof Promise)) return result;
-            return result.catch((e: unknown) => {
-              reset();
-              throw e;
-            });
+    if (typeof value !== "function") {
+      wrapped[key] = value;
+      continue;
+    }
+    wrapped[key] = (...args: unknown[]) => {
+      const gen = generation;
+      const result = (value as (...a: unknown[]) => unknown).apply(gateway, args);
+      if (!(result instanceof Promise)) return result;
+      return result.then(
+        (v) => {
+          proven = true;
+          return v;
+        },
+        (e: unknown) => {
+          // Only the first failure on a given client resets it.
+          if (!proven && gen === generation) {
+            generation += 1;
+            reset();
           }
-        : value;
+          throw e;
+        },
+      );
+    };
   }
   return wrapped as T;
 }

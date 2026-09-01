@@ -11,7 +11,7 @@ CommandResult`. Results now carry the `kind` discriminator dsh requires.
 `/honcho` shows the last upload error until the next successful sync.
 
 **Fixed.** A Honcho outage at boot was permanent. `@honcho-ai/sdk` 2.4.0 caches a rejected
-workspace promise, so the gateway now discards its client after any failed call.
+workspace promise, so the gateway discards its client if a call fails before any has succeeded.
 
 **Memory injection.** Session profile, summary, and the relevant slice of the Honcho
 representation are injected through `ctx.systemPrompt.context()`, dsh's cache-safe dynamic-context
