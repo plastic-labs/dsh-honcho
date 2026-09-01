@@ -9,6 +9,7 @@ import {
   normalizeBaseUrl,
   sessionName,
   unsupportedComponents,
+  unsupportedKeys,
   type ResolvedConfig,
 } from "../src/core-shim.ts";
 
@@ -130,7 +131,6 @@ describe("unsupportedComponents", () => {
     const ignored = unsupportedComponents({
       sessionStart: ["directives", "summary", "briefing"],
       perTurn: ["userContext", "sessionContext"],
-      dialectic: { depth: 2 },
     } as ResolvedConfig["injection"]);
     expect(ignored.map(([n]) => n).sort()).toEqual(["briefing", "sessionContext"]);
     expect(ignored.every(([, reason]) => reason.length > 10)).toBe(true);
@@ -140,25 +140,37 @@ describe("unsupportedComponents", () => {
     const ignored = unsupportedComponents({
       sessionStart: ["directives"],
       perTurn: ["userContext", "dialectic"],
-      dialectic: { depth: 2 },
     } as ResolvedConfig["injection"]);
     expect(ignored).toEqual([]);
   });
 
-  test("a non-default dialectic depth is reported, since Honcho has no such parameter", () => {
-    const ignored = unsupportedComponents({
-      sessionStart: [],
-      perTurn: ["dialectic"],
-      dialectic: { depth: 5 },
-    } as ResolvedConfig["injection"]);
-    expect(ignored.map(([n]) => n)).toEqual(["injection.dialectic.depth"]);
+  test("a key the schema defines but this plugin ignores is reported, not swallowed", () => {
+    // `depth` and `cadence.userContext` were accepted-and-inert; they are gone
+    // from the config type now, so a file that sets them must say so on load.
+    const found = unsupportedKeys({
+      injection: { dialectic: { depth: 5 }, cadence: { userContext: 1 }, showContents: [] },
+      statusline: "full",
+      globalOverride: true,
+    });
+    expect(found.map(([k]) => k).sort()).toEqual([
+      "globalOverride",
+      "injection.cadence.userContext",
+      "injection.dialectic.depth",
+      "injection.showContents",
+      "statusline",
+    ]);
+    expect(found.every(([, reason]) => reason.length > 10)).toBe(true);
+  });
+
+  test("a clean host block reports nothing", () => {
+    expect(unsupportedKeys({ workspace: "dsh", injection: { perTurn: ["userContext"] } })).toEqual([]);
+    expect(unsupportedKeys(undefined)).toEqual([]);
   });
 
   test("a default config reports nothing ignored", () => {
     expect(unsupportedComponents({
       sessionStart: ["directives", "summary", "peerCard"],
       perTurn: ["userContext", "dialectic"],
-      dialectic: { depth: 2 },
     } as ResolvedConfig["injection"])).toEqual([]);
   });
 

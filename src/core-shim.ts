@@ -45,24 +45,45 @@ export type SessionStrategy = (typeof SESSION_STRATEGIES)[number];
 export const SESSION_START_COMPONENTS = ["directives", "summary", "peerCard", "representation", "briefing"] as const;
 export const PER_TURN_COMPONENTS = ["userContext", "assistantContext", "sessionContext", "dialectic"] as const;
 
+/** Config keys the canonical schema defines that this plugin does not act on.
+ *  Nothing is accepted-and-ignored in silence: either a key does something, or
+ *  loading it says so. */
+const UNSUPPORTED_KEYS: Record<string, string> = {
+  "injection.cadence.userContext": "userContext refreshes on cadence.ttlSeconds, not on a turn count",
+  "injection.dialectic.depth": "Honcho's DialecticOptions has no depth parameter",
+  "injection.showContents": "not implemented; dsh already shows runtime-context snapshots in the transcript",
+  "statusline": "not implemented; this plugin has no Web Client half",
+  "globalOverride": "unsupported: it inverts the resolution ladder, so the resolved workspace could differ from what the file says",
+  "observation": "granular observeMe/observeOthers is not implemented; use observationMode",
+  "multiUser": "not applicable to a coding-assistant host",
+};
 const UNSUPPORTED: Record<string, string> = {
   briefing: "no MCP briefing tool in this plugin — session-start memory is injected directly",
   assistantContext: "not implemented; it needs a second context() call for the AI peer",
   sessionContext: "redundant in dsh — recent messages are already in the transcript",
 };
 
-/** Configured components and options this plugin ignores, as `[name, reason]`. */
+/** Configured components this plugin ignores, as `[name, reason]`. */
 export function unsupportedComponents(injection: InjectionConfig): [string, string][] {
-  const out: [string, string][] = [...injection.sessionStart, ...injection.perTurn]
+  return [...injection.sessionStart, ...injection.perTurn]
     .filter((c) => c in UNSUPPORTED)
     .map((c) => [c, UNSUPPORTED[c] as string]);
-  if (injection.perTurn.includes("dialectic") && injection.dialectic.depth !== 2) {
-    out.push([
-      "injection.dialectic.depth",
-      "Honcho's DialecticOptions has no depth parameter, so this value has no effect",
-    ]);
+}
+
+/** Keys present in the file that this plugin does not act on. Walks only the
+ *  paths the canonical schema defines, so an unrelated key is not flagged. */
+export function unsupportedKeys(host: Record<string, unknown> | undefined): [string, string][] {
+  if (!host) return [];
+  const found: [string, string][] = [];
+  for (const [path, reason] of Object.entries(UNSUPPORTED_KEYS)) {
+    let node: unknown = host;
+    for (const part of path.split(".")) {
+      if (!node || typeof node !== "object") { node = undefined; break; }
+      node = (node as Record<string, unknown>)[part];
+    }
+    if (node !== undefined) found.push([path, reason]);
   }
-  return out;
+  return found;
 }
 
 export interface InjectionConfig {
@@ -79,9 +100,14 @@ export interface InjectionConfig {
    *  a layer the server's token budget cannot see. A dsh-honcho extension
    *  proposed for the canonical schema, not yet in it. */
   maxRenderedConclusions: number;
-  /** `userContext` and `dialectic` are turn counts: refresh that component
-   *  every Nth turn. `ttlSeconds` bounds how long any snapshot is reused. */
-  cadence: { userContext: number; dialectic: number; ttlSeconds: number };
+  /** `dialectic` is a turn count: run it every Nth turn. `ttlSeconds` bounds how
+   *  long any snapshot is reused before a background refresh.
+   *
+   *  The canonical schema also lists `cadence.userContext`. It is deliberately
+   *  absent: `userContext` refreshes on `ttlSeconds`, so a turn count would have
+   *  no consumer, and a key that silently does nothing is worse than one that is
+   *  rejected. */
+  cadence: { dialectic: number; ttlSeconds: number };
   /** Shape of the periodic background dialectic. */
   dialectic: DialecticConfig;
 }
@@ -95,11 +121,6 @@ export interface DialecticConfig {
   template: string;
   /** Honcho reasoning tier. `low` keeps a periodic background call affordable. */
   reasoning: ReasoningLevel;
-  /** Accepted for canonical-schema compatibility and NOT implemented: Honcho's
-   *  DialecticOptions has no depth parameter (session_id, filters, scope,
-   *  target, query, stream, reasoning_level, response_format). Kept so a shared
-   *  config does not fail to load; a non-default value is reported at startup. */
-  depth: number;
   /** Hard cap on injected characters — this bounds the prompt, not the spend. */
   maxChars: number;
 }
@@ -125,6 +146,8 @@ export interface MessageUploadConfig {
 }
 
 export interface ResolvedConfig {
+  /** The raw host block as written, for reporting keys this plugin ignores. */
+  rawHost?: Record<string, unknown>;
   apiKey: string;
   peerName: string;
   workspace: string;
@@ -162,13 +185,12 @@ const BUILTIN = {
     maxRenderedConclusions: 4,
     // Matches hermes: a periodic background profile refresh, not a per-turn
     // answer. At cadence 5 the lateness is the design.
-    cadence: { userContext: 1, dialectic: 5, ttlSeconds: 300 },
+    cadence: { dialectic: 5, ttlSeconds: 300 },
     dialectic: {
       template:
         "In two or three sentences, what should I know about this user to work with them well? " +
         "Durable preferences, current projects, working style. Third person, factual, no questions.",
       reasoning: "low",
-      depth: 2,
       maxChars: 600,
     },
   } satisfies InjectionConfig,
@@ -342,6 +364,7 @@ export function loadConfig(options: LoadOptions = {}): ResolvedConfig {
   }
 
   return {
+    rawHost: host as Record<string, unknown> | undefined,
     apiKey,
     peerName: resolvePeerName(file, host),
     workspace: host?.workspace ?? file.workspace ?? BUILTIN.workspace,

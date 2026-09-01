@@ -23,7 +23,14 @@ import type {} from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-system-prompt";
 import type {} from "@deepseek-ai/dsh-session-query";
 import type {} from "@deepseek-ai/dsh-commands";
-import { loadConfig, sessionName, unsupportedComponents, configPath, type ResolvedConfig } from "./core-shim.js";
+import {
+  loadConfig,
+  sessionName,
+  unsupportedComponents,
+  unsupportedKeys,
+  configPath,
+  type ResolvedConfig,
+} from "./core-shim.js";
 import { createGateway, type Gateway } from "./honcho.js";
 import { createCapture, type Capture } from "./capture.js";
 import { DIRECTIVES, renderMemory } from "./memory.js";
@@ -133,6 +140,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   // silently honoring a subset of what their config asks for.
   for (const [name, reason] of unsupportedComponents(resolved.injection)) {
     log(`injection component "${name}" is ignored — ${reason}`);
+  }
+  for (const [key, reason] of unsupportedKeys(resolved.rawHost)) {
+    log(`config key "${key}" is ignored — ${reason}`);
   }
 
   const wantsDirectives = resolved.injection.sessionStart.includes("directives");
