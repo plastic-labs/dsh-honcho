@@ -11,7 +11,10 @@ import { sessionUrl, unsupportedComponents, type ResolvedConfig } from "./core-s
 import type { Capture } from "./capture.js";
 
 export interface CommandDeps {
-  capture: Capture;
+  /** A getter, not a value: capture is wired inside a `ctx.inject` on the
+   *  `sessionQuery` seam, so it can appear or disappear after this command is
+   *  registered. */
+  capture(): Capture | undefined;
   sessionNameFor(cwd: string | undefined): string;
   cwdOf(agent: unknown): string | undefined;
   /** Timestamp of the last successful memory fetch, or undefined. */
@@ -23,6 +26,15 @@ export interface CommandDeps {
   injectionSuppressed(): boolean;
   /** Path the shared config file was read from. */
   configFile(): string;
+}
+
+/** Capture can be configured on but not yet wired, so report the difference
+ *  rather than showing "on" for something that is uploading nothing. */
+function captureStatus(config: ResolvedConfig, capture: Capture | undefined): string {
+  if (!config.capture.saveMessages) return "off (capture.saveMessages)";
+  if (!capture) return "unavailable — ctx.sessionQuery is not mounted";
+  const tools = config.capture.saveToolUse ? " +tools" : "";
+  return `on${tools} · ${capture.pending()} pending · last sync ${ago(capture.lastFlushedAt())}`;
 }
 
 function ago(at: number | undefined): string {
@@ -51,8 +63,10 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
       const name = deps.sessionNameFor(cwd);
 
       if (sub === "flush") {
+        const capture = deps.capture();
+        if (!capture) return { text: "Capture is off — nothing to flush." };
         try {
-          await deps.capture.flushAll();
+          await capture.flushAll();
           return { text: `Flushed to Honcho session \`${name}\`.` };
         } catch (e) {
           return { text: `Flush failed: ${e instanceof Error ? e.message : String(e)}` };
@@ -90,7 +104,7 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
         `endpoint     ${config.baseUrl}`,
         `observation  ${config.observationMode}`,
         `strategy     ${config.sessionStrategy}`,
-        `capture      ${config.capture.saveMessages ? "on" : "off"}${config.capture.saveToolUse ? " +tools" : ""} · ${deps.capture.pending()} pending · last sync ${ago(deps.capture.lastFlushedAt())}`,
+        `capture      ${captureStatus(config, deps.capture())}`,
         `injection    ${deps.injectionActive() ? "active" : "inactive"} · last fetch ${ago(deps.lastFetchAt())}`,
       ];
       if (deps.injectionSuppressed()) {

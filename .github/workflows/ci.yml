@@ -20,3 +20,6 @@ jobs:
         run: bun test
       - name: Build
         run: bun run build
+      # Runs under node on purpose: dsh-tools' schema compiler throws under bun.
+      - name: Verify tool schemas
+        run: node scripts/check-tool-schemas.mjs

@@ -168,7 +168,8 @@ bun run typecheck
 bun run build
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point, and
+[RUNBOOK.md](RUNBOOK.md) for a throwaway-VM test pass.
 
 ## Credit
 

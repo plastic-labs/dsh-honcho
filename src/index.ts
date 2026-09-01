@@ -142,20 +142,52 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // ── capture ──────────────────────────────────────────────────────────────
 
-  const sessionQuery = ctx.get("sessionQuery") as
-    | { readSession(id: string): Promise<{ session?: { cwd?: string }; events?: readonly unknown[] }> }
-    | undefined;
-
+  // `ctx.sessionQuery` is an abstract seam, and services publish asynchronously:
+  // a bare `ctx.get()` during apply() races whichever backend provides it and
+  // would disable capture permanently on a lost race. `ctx.inject` waits for the
+  // service, re-runs if it is replaced, and tears this down if it goes away —
+  // which is the difference between "optional" and "queried too early".
   let capture: Capture | undefined;
-  if (sessionQuery && resolved.capture.saveMessages) {
-    capture = createCapture(resolved, {
-      readSession: (id) => sessionQuery.readSession(id) as never,
-      honchoSessionName: (cwd, dshSessionId) => sessionNameFor(cwd, dshSessionId),
-      upload: (name, messages) => honcho.upload(name, messages),
-      onError: (message) => log(`capture: ${message}`),
+
+  if (resolved.capture.saveMessages) {
+    ctx.inject(["sessionQuery"], (scoped) => {
+      const sessionQuery = scoped.sessionQuery as unknown as {
+        readSession(id: string): Promise<{ session?: { cwd?: string }; events?: readonly unknown[] }>;
+      };
+
+      const active = createCapture(resolved, {
+        readSession: (id) => sessionQuery.readSession(id) as never,
+        honchoSessionName: (cwd, dshSessionId) => sessionNameFor(cwd, dshSessionId),
+        upload: (name, messages) => honcho.upload(name, messages),
+        onError: (message) => log(`capture: ${message}`),
+      });
+      capture = active;
+
+      scoped.on("session/event", (session: { id?: string }, event: { type?: string }) => {
+        if (!session.id) return;
+        if (event.type === "user/message" || event.type === "assistant/message") {
+          active.schedule(session.id);
+        } else if (event.type === "compaction/start") {
+          // The lock brackets the whole operation, so this fires before any
+          // history is shadowed. Last chance to capture what is about to go.
+          void active.flush(session.id);
+        }
+      });
+
+      scoped.on("agent/turn-stopping", async (payload: { agent: AgentLike }) => {
+        const id = payload.agent.session?.id;
+        if (id) await active.flush(id);
+      });
+
+      scoped.effect(() => async () => {
+        await active.dispose();
+        if (capture === active) capture = undefined;
+      });
+
+      log("capture on.");
     });
-  } else if (resolved.capture.saveMessages) {
-    log("ctx.sessionQuery is unavailable — turn capture is off. Injection and tools still work.");
+  } else {
+    log("capture is off by configuration (capture.saveMessages).");
   }
 
   // ── injection ────────────────────────────────────────────────────────────
@@ -254,41 +286,21 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // ── capture wiring ───────────────────────────────────────────────────────
 
-  if (capture) {
-    const activeCapture = capture;
-
-    ctx.on("session/event", (session: { id?: string }, event: { type?: string }) => {
-      if (!session.id) return;
-      if (event.type === "user/message" || event.type === "assistant/message") {
-        activeCapture.schedule(session.id);
-      } else if (event.type === "compaction/start") {
-        // The lock brackets the whole operation, so this fires before any
-        // history is shadowed. Last chance to capture what is about to go.
-        void activeCapture.flush(session.id);
-      }
-    });
-
-    ctx.on("agent/turn-stopping", async (payload: { agent: AgentLike }) => {
-      const id = payload.agent.session?.id;
-      if (id) await activeCapture.flush(id);
-    });
-  }
-
   // ── tools ────────────────────────────────────────────────────────────────
 
   if (resolved.injection.tools) {
     for (const tool of createTools(resolved, honcho)) {
-      ctx.tools.register(tool as never);
+      ctx.tools.register(tool);
     }
   }
 
   // ── command ──────────────────────────────────────────────────────────────
 
-  const commands = ctx.get("commands") as { register(def: unknown): () => void } | undefined;
-  if (commands && capture) {
+  ctx.inject(["commands"], (scoped) => {
+    const commands = scoped.commands as unknown as { register(def: unknown): () => void };
     commands.register(
       createCommand(resolved, {
-        capture,
+        capture: () => capture,
         sessionNameFor,
         cwdOf: (agent) => (agent as AgentLike)?.session?.header?.cwd,
         lastFetchAt: () => lastFetchAt,
@@ -298,16 +310,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         configFile: () => configPath(config.configPath),
       }),
     );
-  }
+  });
 
   // ── teardown ─────────────────────────────────────────────────────────────
 
   ctx.effect(() => async () => {
     // Async disposers ARE awaited on unload. `session/flush` is not a
     // session-end signal and `session/disposed` is emit-only, so this is the
-    // one place a final flush is guaranteed to complete.
+    // one place a final flush is guaranteed to complete. The capture half has
+    // its own disposer inside the sessionQuery injection.
     disposeMemory?.();
-    await capture?.dispose();
   });
 
   log(`ready — workspace ${resolved.workspace}, peer ${resolved.peerName}, ${resolved.observationMode}`);
