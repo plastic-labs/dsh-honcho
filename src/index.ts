@@ -18,6 +18,7 @@ import type { Context } from "@deepseek-ai/cordis";
 // through declaration merging, so each package we touch must be imported for
 // its augmentation even though we call nothing from it directly.
 import type { PreStepDecision } from "@deepseek-ai/dsh-agent";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type {} from "@deepseek-ai/dsh-tools";
 import type {} from "@deepseek-ai/dsh-session";
 import type {} from "@deepseek-ai/dsh-system-prompt";
@@ -28,6 +29,7 @@ import {
   sessionName,
   unsupportedComponents,
   unsupportedKeys,
+  renamedKeys,
   configPath,
   type ResolvedConfig,
 } from "./core-shim.js";
@@ -143,6 +145,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
   for (const [key, reason] of unsupportedKeys(resolved.rawHost)) {
     log(`config key "${key}" is ignored — ${reason}`);
+  }
+  for (const [key, to] of renamedKeys(resolved.rawHost)) {
+    log(`config key "${key}" was RENAMED to ${to} — the old key has no effect`);
   }
 
   const wantsDirectives = resolved.injection.sessionStart.includes("directives");
@@ -278,6 +283,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
   }
 
+  /** The memory block as it currently stands, or "" when there is none. */
+  function currentMemoryText(): string {
+    return renderMemory(resolved, lastContext, [], dialecticText)?.text ?? "";
+  }
+
   /** Re-render from the last fetch, so a late dialectic reaches the prompt
    *  without paying for another context() call. */
   function rerender(): void {
@@ -291,12 +301,16 @@ export function apply(ctx: Context, config: Config = {}): void {
    *  it. At cadence N it is a periodic profile refresh, not an answer to the
    *  current message — which is why arriving a turn late is acceptable here and
    *  would not be at cadence 1. */
-  function maybeDialectic(cwd: string | undefined, id: string | undefined, query: string): void {
-    if (!wantsDialectic || dialecticInFlight) return;
+  function maybeDialectic(
+    cwd: string | undefined,
+    id: string | undefined,
+    query: string,
+  ): Promise<void> | undefined {
+    if (!wantsDialectic || dialecticInFlight) return undefined;
     const every = Math.max(1, resolved.injection.cadence.dialectic);
-    if (turnCount % every !== 1 % every) return;
+    if (turnCount % every !== 1 % every) return undefined;
     dialecticInFlight = true;
-    void honcho
+    return honcho
       .backgroundDialectic(cwd, id, query)
       .then((answer) => {
         if (!answer) return;
@@ -327,13 +341,23 @@ export function apply(ctx: Context, config: Config = {}): void {
       const query = textOf(payload.messages);
       const stale = !lastFetchAt || Date.now() - lastFetchAt > refreshTtlMs;
       turnCount += 1;
-      maybeDialectic(cwd, id, query);
+      const dialecticFirstRun = maybeDialectic(cwd, id, query);
 
-      if (!lastFetchAt && !lastFetchError) {
+      const firstRequest = !lastFetchAt && !lastFetchError;
+      if (firstRequest) {
         // First request of the session: this waterfall is awaited, so it is the
         // only place memory can land BEFORE the model sees the prompt. Bounded,
         // and only paid once.
-        await withTimeout(refreshMemory(cwd, id, query), FIRST_TURN_BUDGET_MS);
+        // The dialectic is awaited on turn 1 only. Measured at ~1.1s at `low`
+        // reasoning, it fits the same budget as the context fetch, and it is
+        // the component most likely to carry content in a workspace whose peer
+        // card and summary are still empty. Every later turn leaves it async.
+        await withTimeout(
+          Promise.all([refreshMemory(cwd, id, query), dialecticFirstRun ?? Promise.resolve()]).then(() => {
+            if (dialecticText) rerender();
+          }),
+          FIRST_TURN_BUDGET_MS,
+        );
       } else if (wantsPerTurnRefresh && stale && !refreshing) {
         // Later turns never block. A turn either gets fresh memory or the
         // previous snapshot.
@@ -341,7 +365,31 @@ export function apply(ctx: Context, config: Config = {}): void {
           refreshing = undefined;
         });
       }
-      return next();
+      const decision = await next();
+
+      // Turn 1 gets the memory as a message in THIS step, not only as a runtime
+      // context. A PromptContext registered during pre-step does not reach the
+      // request it was registered for -- verified against a live harness, where
+      // the model answered "NO BLOCK" while the plugin had registered 466
+      // characters. Registration still happens for every later turn, where it is
+      // cache-safe and updates in place; this covers only the first request,
+      // which would otherwise be the one turn with no memory at all.
+      if (firstRequest && decision.kind === "enter" && decision.messages.length > 0) {
+        const text = currentMemoryText();
+        if (text) {
+          return {
+            ...decision,
+            messages: [
+              ...decision.messages,
+              createUserMessage({
+                content: [{ type: "text", text }],
+                source: { kind: "plugin", plugin: "honcho" },
+              }),
+            ],
+          };
+        }
+      }
+      return decision;
     },
     { prepend: true },
   );

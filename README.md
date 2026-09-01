@@ -62,7 +62,7 @@ behavior.
   "timeoutMs": 30000,
   "auth": { "apiKey": "${HONCHO_API_KEY}" },
   "enabled": true, // global kill switch
-  "sessions": { "/path/to/repo": "pinned-session-name" },
+  // sessions may also sit here as a fallback; the host block wins
 
   "hosts": {
     "dsh": {
@@ -71,24 +71,32 @@ behavior.
       "observationMode": "unified", // unified | directional
       "sessionStrategy": "per-directory", // see Sessions below
       "sessionPeerPrefix": true, // session names are <peer>-<dir>
+      "sessions": { "/path/to/repo": "pinned-session-name" }, // pin a session
       "injection": {
         "sessionStart": ["directives", "summary", "peerCard"], // + representation
-        "perTurn": ["userContext"], // [] pins memory to the session-start snapshot
+        "perTurn": ["userContext", "dialectic"], // userContext = representation + card
         "tools": true,
         "searchTopK": 10,
         "searchMaxDistance": 0.6,
-        "maxConclusions": 15,
+        "maxConclusions": 15, // how many conclusions Honcho RETURNS
+        "maxRenderedConclusions": 4, // how many survive filtering into the prompt
         "contextTokens": 1500,
-        "injectionMaxChars": 4000,
-        "reprMaxObs": 4,
-        "cadence": { "ttlSeconds": 300 }, // how long a snapshot is reused
+        "cadence": { "dialectic": 5, "ttlSeconds": 300 },
+        "dialectic": {
+          "reasoning": "low", // minimal | low | medium | high | max
+          "maxChars": 600,
+        },
       },
       "capture": {
         "saveMessages": true,
         "saveToolUse": false, // one-line summaries of tool activity
-        "redactPatterns": [], // additive to the built-in secret patterns
-        "debounceMs": 3000,
-        "messageMaxChars": 25000,
+        "writeFrequency": "async", // async | sync
+        "noisePatterns": [], // additive to the built-in secret patterns
+      },
+      "messageUpload": {
+        "maxUserTokens": 6000,
+        "maxAssistantTokens": 6000,
+      },
       },
     },
   },
@@ -97,18 +105,24 @@ behavior.
 
 ### Injection components
 
-`injection.sessionStart` selects what appears in the injected block: `directives` (guidance on using memory),
-`summary`, `peerCard`, and `representation`. Drop what you don't want to pay for — `["directives", "peerCard"]`
-gives a profile and nothing else.
+The two menus differ in **cadence**, not in what they can carry.
 
-`injection.perTurn` containing `userContext` re-fetches as you work, using your current message as the search
-query so recall is associative rather than merely recent. Set it to `[]` to fetch once at session start and
-never again.
+`injection.sessionStart` is injected once when a session opens: `directives` (guidance on using memory),
+`summary`, `peerCard`, `representation`.
 
-The canonical schema names components this plugin doesn't implement — `briefing`, `assistantContext`,
-`sessionContext`, and `dialectic`. Configuring one logs why it's ignored at startup rather than silently
-honoring a subset; `/honcho config` lists them too. `dialectic` is the notable one: it's the `honcho_chat` tool
-here, so it runs against the actual question instead of a turn-old snapshot.
+`injection.perTurn` refreshes as you work:
+
+- **`userContext`** — a fresh, prompt-scoped peer context blob: **representation + peer card**, retrieved using
+  your current message as the search query so recall is associative rather than merely recent. It is a bundle,
+  so it supplies both regardless of what `sessionStart` names. To get one without the other, name it in
+  `sessionStart` and set `perTurn: []` — at the cost of per-turn refresh.
+- **`dialectic`** — a reasoned answer about you, run every `cadence.dialectic` turns and shaped by
+  `injection.dialectic`. Nothing waits on it after the first turn, so a late answer reaches the next one.
+
+Components the canonical schema names but this plugin does not implement — `briefing`, `assistantContext`,
+`sessionContext` — are reported at startup rather than silently dropped, as are schema keys it does not act on
+(`showContents`, `statusline`, `globalOverride`, granular `observation`, `multiUser`) and any key renamed since
+an earlier version. Nothing here is accepted and quietly ignored.
 
 The plugin's own `cordis.yml` config carries plumbing only — `configPath`, `apiKeyRef`, `host`, `enabled`. Set
 `host` to run a credential-isolated profile (`"dsh_work"`) against the same install.

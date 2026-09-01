@@ -10,6 +10,7 @@ import {
   sessionName,
   unsupportedComponents,
   unsupportedKeys,
+  renamedKeys,
   type ResolvedConfig,
 } from "../src/core-shim.ts";
 
@@ -160,6 +161,26 @@ describe("unsupportedComponents", () => {
       "statusline",
     ]);
     expect(found.every(([, reason]) => reason.length > 10)).toBe(true);
+  });
+
+  test("a renamed key is reported rather than silently ignored", () => {
+    // capture.redactPatterns silently doing nothing means silently not
+    // redacting — the one stale key here with real consequences.
+    const found = renamedKeys({
+      capture: { redactPatterns: ["x"], debounceMs: 3000 },
+      injection: { reprMaxObs: 8 },
+    });
+    expect(found.map(([k]) => k).sort()).toEqual([
+      "capture.debounceMs",
+      "capture.redactPatterns",
+      "injection.reprMaxObs",
+    ]);
+    expect(found.find(([k]) => k === "capture.redactPatterns")![1]).toContain("noisePatterns");
+  });
+
+  test("current key names are not reported as renamed", () => {
+    expect(renamedKeys({ capture: { noisePatterns: [], writeFrequency: "async" } })).toEqual([]);
+    expect(renamedKeys(undefined)).toEqual([]);
   });
 
   test("a clean host block reports nothing", () => {

@@ -48,6 +48,17 @@ export const PER_TURN_COMPONENTS = ["userContext", "assistantContext", "sessionC
 /** Config keys the canonical schema defines that this plugin does not act on.
  *  Nothing is accepted-and-ignored in silence: either a key does something, or
  *  loading it says so. */
+const RENAMED_KEYS: Record<string, string> = {
+  // Keys this plugin once had. They are not canonical-schema names, so nothing
+  // else would flag them — and silently ignoring `capture.redactPatterns` means
+  // silently not redacting, which is the one failure here with teeth.
+  "capture.redactPatterns": "capture.noisePatterns",
+  "capture.debounceMs": "capture.writeFrequency",
+  "capture.messageMaxChars": "messageUpload.maxUserTokens / maxAssistantTokens",
+  "injection.injectionMaxChars": "injection.contextTokens (the prompt budget derives from it)",
+  "injection.reprMaxObs": "injection.maxRenderedConclusions",
+};
+
 const UNSUPPORTED_KEYS: Record<string, string> = {
   "injection.cadence.userContext": "userContext refreshes on cadence.ttlSeconds, not on a turn count",
   "injection.dialectic.depth": "Honcho's DialecticOptions has no depth parameter",
@@ -70,20 +81,31 @@ export function unsupportedComponents(injection: InjectionConfig): [string, stri
     .map((c) => [c, UNSUPPORTED[c] as string]);
 }
 
+function readPath(root: Record<string, unknown>, path: string): unknown {
+  let node: unknown = root;
+  for (const part of path.split(".")) {
+    if (!node || typeof node !== "object") return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return node;
+}
+
 /** Keys present in the file that this plugin does not act on. Walks only the
  *  paths the canonical schema defines, so an unrelated key is not flagged. */
 export function unsupportedKeys(host: Record<string, unknown> | undefined): [string, string][] {
   if (!host) return [];
-  const found: [string, string][] = [];
-  for (const [path, reason] of Object.entries(UNSUPPORTED_KEYS)) {
-    let node: unknown = host;
-    for (const part of path.split(".")) {
-      if (!node || typeof node !== "object") { node = undefined; break; }
-      node = (node as Record<string, unknown>)[part];
-    }
-    if (node !== undefined) found.push([path, reason]);
-  }
-  return found;
+  return Object.entries(UNSUPPORTED_KEYS)
+    .filter(([path]) => readPath(host, path) !== undefined)
+    .map(([path, reason]): [string, string] => [path, reason]);
+}
+
+/** Keys this plugin renamed. Reported so a config written against an older
+ *  version fails loudly rather than quietly doing nothing. */
+export function renamedKeys(host: Record<string, unknown> | undefined): [string, string][] {
+  if (!host) return [];
+  return Object.entries(RENAMED_KEYS)
+    .filter(([path]) => readPath(host, path) !== undefined)
+    .map(([path, to]): [string, string] => [path, to]);
 }
 
 export interface InjectionConfig {

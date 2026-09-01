@@ -184,7 +184,7 @@ then disabled and injection and tools continue.
 ### Redaction
 
 Every captured message is scrubbed before upload, using the rules ported from `claude-honcho/src/redact.ts`
-plus any user `capture.redactPatterns`. A coding harness holds whatever is on screen — pasted keys, `.env`
+plus any user `capture.noisePatterns`. A coding harness holds whatever is on screen — pasted keys, `.env`
 contents, customer data — so capture without scrubbing is an exfiltration path, and the two ship together.
 
 ### Subagents
