@@ -247,6 +247,7 @@ export interface CaptureDeps {
 export interface Capture {
   schedule(sessionId: string): void;
   flush(sessionId: string): Promise<void>;
+  /** Rejects if any session's upload failed, so `/honcho flush` can report it. */
   flushAll(): Promise<void>;
   /** Flush everything outstanding, then stop. Await this from the plugin's
    *  `ctx.effect` disposer — async disposers ARE awaited on unload, and that is
@@ -254,6 +255,8 @@ export interface Capture {
   dispose(): Promise<void>;
   /** Timestamp of the last successful upload, for `/honcho` status. */
   lastFlushedAt(): number | undefined;
+  /** Last upload error; cleared on the next success. */
+  lastError(): string | undefined;
   pending(): number;
 }
 
@@ -262,6 +265,9 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
   const inflight = new Map<string, Promise<void>>();
   const known = new Set<string>();
   let lastFlushed: number | undefined;
+  let lastError: string | undefined;
+  /** Monotonic, so `flushAll` can tell whether this call failed. */
+  let failures = 0;
   let pendingCount = 0;
   let disposed = false;
 
@@ -292,6 +298,7 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
     await deps.upload(name, messages);
     writeCursor(sessionId, events.length);
     lastFlushed = Date.now();
+    lastError = undefined;
     pendingCount = 0;
   }
 
@@ -303,7 +310,9 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
       .catch(() => {})
       .then(() => run(sessionId))
       .catch((e: unknown) => {
-        deps.onError?.(e instanceof Error ? e.message : String(e));
+        lastError = e instanceof Error ? e.message : String(e);
+        failures += 1;
+        deps.onError?.(lastError);
       })
       .finally(() => {
         if (inflight.get(sessionId) === next) inflight.delete(sessionId);
@@ -336,7 +345,9 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
       return guarded(sessionId);
     },
     async flushAll() {
+      const before = failures;
       await Promise.all([...known].map((id) => this.flush(id)));
+      if (failures > before) throw new Error(lastError ?? "upload failed");
     },
     async dispose() {
       // Order matters: stop new debounced work, drain what is outstanding, and
@@ -344,11 +355,13 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
       // run return early and silently drop the final turn.
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
-      await this.flushAll();
+      // Already reported via onError; teardown must not throw.
+      await this.flushAll().catch(() => {});
       await Promise.all([...inflight.values()].map((p) => p.catch(() => {})));
       disposed = true;
     },
     lastFlushedAt: () => lastFlushed,
+    lastError: () => lastError,
     pending: () => pendingCount,
   };
 }

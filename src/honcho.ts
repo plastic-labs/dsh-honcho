@@ -31,10 +31,38 @@ export interface Gateway extends HonchoGateway {
   upload(sessionName: string, messages: CapturedMessage[]): Promise<void>;
 }
 
+/**
+ * Discard the SDK client after any failed call.
+ *
+ * `@honcho-ai/sdk` 2.4.0 memoizes its workspace get-or-create promise,
+ * rejections included, so one failure at boot would poison every later call.
+ */
+function recovering<T extends object>(gateway: T, reset: () => void): T {
+  const wrapped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(gateway)) {
+    wrapped[key] =
+      typeof value === "function"
+        ? (...args: unknown[]) => {
+            const result = (value as (...a: unknown[]) => unknown).apply(gateway, args);
+            if (!(result instanceof Promise)) return result;
+            return result.catch((e: unknown) => {
+              reset();
+              throw e;
+            });
+          }
+        : value;
+  }
+  return wrapped as T;
+}
+
 export function createGateway(config: ResolvedConfig): Gateway {
-  const honcho = new Honcho(clientOptions(config));
+  let honcho = new Honcho(clientOptions(config));
   const directional = config.observationMode === "directional";
   const ensured = new Set<string>();
+  const reset = () => {
+    honcho = new Honcho(clientOptions(config));
+    ensured.clear();
+  };
 
   const userPeer = (): Promise<Peer> => honcho.peer(config.peerName);
   const aiPeer = (): Promise<Peer> => honcho.peer(config.aiPeer);
@@ -43,7 +71,7 @@ export function createGateway(config: ResolvedConfig): Gateway {
 
   const nameFor = (cwd?: string, dshSessionId?: string): string => sessionName(config, cwd, dshSessionId);
 
-  return {
+  const gateway: Gateway = {
     currentSessionName: nameFor,
 
     async ensureSession(cwd, dshSessionId) {
@@ -144,4 +172,5 @@ export function createGateway(config: ResolvedConfig): Gateway {
       await peer.conclusionsOf(config.peerName).create({ content, sessionId: session.id });
     },
   };
+  return recovering(gateway, reset);
 }
