@@ -4,6 +4,9 @@
 
 First release. Honcho memory for DeepSeek Harness, as a native Cordis plugin.
 
+**Packaging.** `main` and the `.` export now point at a committed root `index.js` that forwards to
+the build in `lib/`, so catalogs that verify a plugin from its git tree can resolve the entry.
+
 **Fixed.** `/honcho`, `/honcho config`, and `/honcho flush` failed with `handler must return a
 CommandResult`. Results now carry the `kind` discriminator dsh requires.
 
