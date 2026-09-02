@@ -45,6 +45,9 @@
   ],
   "author": "Plastic Labs",
   "homepage": "https://honcho.dev",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/plastic-labs/dsh-honcho.git"
