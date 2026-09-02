@@ -7,8 +7,14 @@
  * exactly like a working plugin. This is where that becomes visible.
  */
 
+import type { CommandResult } from "@deepseek-ai/dsh-commands/types";
+
 import { sessionUrl, unsupportedComponents, type ResolvedConfig } from "./core-shim.js";
 import type { Capture } from "./capture.js";
+
+// dsh's registry rejects results without a `kind` discriminator.
+const ok = (text: string): CommandResult => ({ kind: "success", text });
+const fail = (text: string): CommandResult => ({ kind: "error", text });
 
 export interface CommandDeps {
   /** A getter, not a value: capture is wired inside a `ctx.inject` on the
@@ -49,7 +55,7 @@ export interface CommandDefinition {
   name: string;
   description: string;
   input: { hint: string };
-  handler(invocation: { agent: unknown; rawInput?: string }): Promise<{ text: string }>;
+  handler(invocation: { agent: unknown; rawInput?: string }): Promise<CommandResult>;
 }
 
 export function createCommand(config: ResolvedConfig, deps: CommandDeps): CommandDefinition {
@@ -64,12 +70,12 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
 
       if (sub === "flush") {
         const capture = deps.capture();
-        if (!capture) return { text: "Capture is off — nothing to flush." };
+        if (!capture) return ok("Capture is off — nothing to flush.");
         try {
           await capture.flushAll();
-          return { text: `Flushed to Honcho session \`${name}\`.` };
+          return ok(`Flushed to Honcho session \`${name}\`.`);
         } catch (e) {
-          return { text: `Flush failed: ${e instanceof Error ? e.message : String(e)}` };
+          return fail(`Flush failed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
 
@@ -88,11 +94,11 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
           lines.push("", "ignored injection components:");
           for (const [name, reason] of ignored) lines.push(`  ${name} — ${reason}`);
         }
-        return { text: lines.join("\n") };
+        return ok(lines.join("\n"));
       }
 
       if (sub && sub !== "status") {
-        return { text: `Unknown subcommand \`${sub}\`. Use \`/honcho\`, \`/honcho config\`, or \`/honcho flush\`.` };
+        return fail(`Unknown subcommand \`${sub}\`. Use \`/honcho\`, \`/honcho config\`, or \`/honcho flush\`.`);
       }
 
       const fetchError = deps.lastFetchError();
@@ -111,9 +117,11 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
         lines.push("⚠ runtime context is suppressed by this composition — injected memory is not reaching the model");
       }
       if (fetchError) lines.push(`⚠ last fetch failed: ${fetchError}`);
+      const uploadError = deps.capture()?.lastError();
+      if (uploadError) lines.push(`⚠ last upload failed: ${uploadError}`);
       if (!config.apiKey) lines.push("⚠ no API key — set HONCHO_API_KEY or auth.apiKey in ~/.honcho/config.json");
       lines.push("", sessionUrl(config.workspace, name));
-      return { text: lines.join("\n") };
+      return ok(lines.join("\n"));
     },
   };
 }

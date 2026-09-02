@@ -4,6 +4,15 @@
 
 First release. Honcho memory for DeepSeek Harness, as a native Cordis plugin.
 
+**Fixed.** `/honcho`, `/honcho config`, and `/honcho flush` failed with `handler must return a
+CommandResult`. Results now carry the `kind` discriminator dsh requires.
+
+**Fixed.** `/honcho flush` reported success when the upload had failed. It now returns an error, and
+`/honcho` shows the last upload error until the next successful sync.
+
+**Fixed.** A Honcho outage at boot was permanent. `@honcho-ai/sdk` 2.4.0 caches a rejected
+workspace promise, so the gateway now keeps a client only once its first call has succeeded.
+
 **Memory injection.** Session profile, summary, and the relevant slice of the Honcho
 representation are injected through `ctx.systemPrompt.context()`, dsh's cache-safe dynamic-context
 slot. One `session.context()` call fetches all three, using the current message as a semantic search

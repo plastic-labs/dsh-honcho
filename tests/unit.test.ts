@@ -574,3 +574,35 @@ describe("redactSecrets", () => {
     expect(redactSecrets("please refactor the parser")).toBe("please refactor the parser");
   });
 });
+
+// ── regressions from the first live run (DEV-2537) ────────────────────────
+
+import { createCommand } from "../src/commands.ts";
+import { createCapture } from "../src/capture.ts";
+
+test("/honcho results carry the `kind` dsh's registry requires", async () => {
+  const config = { injection: { sessionStart: [], perTurn: [] }, capture: {} } as unknown as ResolvedConfig;
+  const noop = () => undefined;
+  const command = createCommand(config, {
+    capture: noop, sessionNameFor: () => "s", cwdOf: noop, lastFetchAt: noop, lastFetchError: noop,
+    injectionActive: () => true, injectionSuppressed: () => false, configFile: () => "",
+  });
+  for (const input of ["", "config", "flush"]) expect((await command.handler({ agent: {}, rawInput: input })).kind).toBe("success");
+  expect((await command.handler({ agent: {}, rawInput: "bogus" })).kind).toBe("error");
+});
+
+test("flushAll rejects on a failed upload; dispose does not", async () => {
+  process.env.HONCHO_CONFIG_DIR = mkdtempSync(join(tmpdir(), "dsh-honcho-capture-"));
+  const capture = createCapture(
+    { peerName: "p", capture: { saveMessages: true, noisePatterns: [] }, messageUpload: { maxUserTokens: 250, maxAssistantTokens: 250 } } as unknown as ResolvedConfig,
+    {
+      readSession: async () => ({ session: {}, events: [{ type: "user/message", data: { content: [{ type: "text", text: "hi" }], source: { kind: "user" } } }] }),
+      honchoSessionName: () => "s",
+      upload: async () => { throw new Error("fetch failed"); },
+    },
+  );
+  capture.schedule("session-1");
+  await expect(capture.flushAll()).rejects.toThrow("fetch failed");
+  expect(capture.lastError()).toBe("fetch failed");
+  await expect(capture.dispose()).resolves.toBeUndefined();
+});
