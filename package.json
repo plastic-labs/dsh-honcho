@@ -4,16 +4,17 @@
   "description": "Honcho memory for DeepSeek Harness — persistent, cross-session memory that survives context resets and restarts.",
   "license": "MIT",
   "type": "module",
-  "main": "lib/index.js",
+  "main": "index.js",
   "types": "lib/index.d.ts",
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
-      "default": "./lib/index.js"
+      "default": "./index.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
+    "index.js",
     "lib",
     "skills",
     "cordis.patch.yml",
