@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,6 +114,19 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ configPath: path, host: "dsh" })).toThrow(/unknown sessionStrategy/);
   });
 
+  test("git-remote is a known strategy", () => {
+    const path = writeConfig({ ...base, hosts: { dsh: { sessionStrategy: "git-remote" } } });
+    expect(loadConfig({ configPath: path, host: "dsh" }).sessionStrategy).toBe("git-remote");
+  });
+
+  test("sessionPrefix: host block beats root, and defaults to empty", () => {
+    expect(loadConfig({ configPath: writeConfig(base), host: "dsh" }).sessionPrefix).toBe("");
+    const root = writeConfig({ ...base, sessionPrefix: "mac-" });
+    expect(loadConfig({ configPath: root, host: "dsh" }).sessionPrefix).toBe("mac-");
+    const both = writeConfig({ ...base, sessionPrefix: "mac-", hosts: { dsh: { sessionPrefix: "vps-" } } });
+    expect(loadConfig({ configPath: both, host: "dsh" }).sessionPrefix).toBe("vps-");
+  });
+
   test("a partial injection block does not wipe sibling defaults", () => {
     const path = writeConfig({ ...base, hosts: { dsh: { injection: { searchTopK: 3 } } } });
     const config = loadConfig({ configPath: path, host: "dsh" });
@@ -206,9 +220,18 @@ describe("sessionName", () => {
   const config = {
     peerName: "Vineeth",
     sessionPeerPrefix: true,
+    sessionPrefix: "",
     sessionStrategy: "per-directory",
     sessions: {} as Record<string, string>,
   } as ResolvedConfig;
+
+  /** A throwaway repo with the given origin, or none when `origin` is omitted. */
+  function repoWith(origin?: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-honcho-repo-"));
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    if (origin) execFileSync("git", ["remote", "add", "origin", origin], { cwd: dir });
+    return dir;
+  }
 
   test("claude-honcho convention: <peer>-<dir>, sanitized", () => {
     expect(sessionName(config, "/Users/v/workspace/Plastic Labs")).toBe("vineeth-plastic-labs");
@@ -258,7 +281,67 @@ describe("sessionName", () => {
     const pinned = { ...config, sessionStrategy: "global", sessions: { "/repo": "pinned" } } as ResolvedConfig;
     expect(sessionName(pinned, "/repo")).toBe("pinned");
   });
+
+  describe("git-remote", () => {
+    const gitRemote = { ...config, sessionStrategy: "git-remote" } as ResolvedConfig;
+
+    test("ssh and https clones of one repo get one name", () => {
+      const ssh = sessionName(gitRemote, repoWith("git@github.com:plastic-labs/dsh-honcho.git"));
+      const https = sessionName(gitRemote, repoWith("https://github.com/plastic-labs/dsh-honcho"));
+      expect(ssh).toBe("vineeth-github-com-plastic-labs-dsh-honcho");
+      expect(https).toBe(ssh);
+    });
+
+    test("a trailing slash, a scheme-qualified ssh URL, and credentials all normalize away", () => {
+      const name = "vineeth-github-com-plastic-labs-dsh-honcho";
+      expect(sessionName(gitRemote, repoWith("https://github.com/plastic-labs/dsh-honcho.git/"))).toBe(name);
+      expect(sessionName(gitRemote, repoWith("ssh://git@github.com/plastic-labs/dsh-honcho.git"))).toBe(name);
+      expect(sessionName(gitRemote, repoWith("https://token@github.com/plastic-labs/dsh-honcho"))).toBe(name);
+    });
+
+    test("two projects sharing a folder name stay apart", () => {
+      const a = sessionName(gitRemote, repoWith("git@github.com:acme/web.git"));
+      const b = sessionName(gitRemote, repoWith("git@github.com:other/web.git"));
+      expect(a).not.toBe(b);
+    });
+
+    test("a repo without an origin collapses to per-directory", () => {
+      const dir = repoWith();
+      expect(sessionName(gitRemote, dir)).toBe(`vineeth-${sanitizedBase(dir)}`);
+    });
+
+    test("outside a repo it collapses to per-directory, not a placeholder", () => {
+      expect(sessionName(gitRemote, "/tmp")).toBe("vineeth-tmp");
+    });
+  });
+
+  describe("sessionPrefix", () => {
+    test("is prepended to every strategy's name", () => {
+      const prefixed = { ...config, sessionPrefix: "vps-" } as ResolvedConfig;
+      expect(sessionName(prefixed, "/a/dedenne")).toBe("vps-vineeth-dedenne");
+      expect(sessionName({ ...prefixed, sessionStrategy: "global" } as ResolvedConfig, "/a/dedenne")).toBe(
+        "vps-vineeth",
+      );
+      expect(sessionName({ ...prefixed, sessionPeerPrefix: false } as ResolvedConfig, "/a/dedenne")).toBe(
+        "vps-dedenne",
+      );
+    });
+
+    test("does not touch a pinned name — an override always wins whole", () => {
+      const pinned = { ...config, sessionPrefix: "vps-", sessions: { "/repo": "pinned" } } as ResolvedConfig;
+      expect(sessionName(pinned, "/repo")).toBe("pinned");
+    });
+
+    test("empty by default, so existing names are unchanged", () => {
+      expect(sessionName(config, "/a/dedenne")).toBe("vineeth-dedenne");
+    });
+  });
 });
+
+/** basename of a temp dir, sanitized the way session names are. */
+function sanitizedBase(dir: string): string {
+  return (dir.split("/").pop() ?? "").toLowerCase().replace(/[^a-z0-9-_]/g, "-");
+}
 
 describe("summarizeTool", () => {
   test("records mutating shell commands", () => {

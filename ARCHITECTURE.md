@@ -233,12 +233,18 @@ sessions line up across integrations. An explicit root `sessions[cwd]` entry alw
 `SessionHeader.cwd` is optional (`packages/core/session/src/types.ts:68`), so its absence falls back rather
 than assuming `process.cwd()` — dsh sessions can be remote or sandboxed.
 
-All five canonical strategies are implemented — `per-directory`, `per-repo`, `git-branch`, `per-session`,
-`global` — and an unrecognized value throws at load rather than silently doing something else. Two details
-worth keeping: `git-branch` collapses to the per-directory name outside a repo or on a detached HEAD rather
-than inventing a placeholder that would fork memory; and `per-session` strips dsh's `session-` id prefix
-instead of truncating, because dsh mints ids as `session-<n>` and a fixed truncation maps every session to one
-name.
+All the canonical strategies are implemented — `per-directory`, `per-repo`, `git-remote`, `git-branch`,
+`per-session`, `global` — and an unrecognized value throws at load rather than silently doing something else.
+Three details worth keeping: `git-branch` and `git-remote` both collapse to the per-directory name when the
+git fact they need is missing, rather than inventing a placeholder that would fork memory; `per-session`
+strips dsh's `session-` id prefix instead of truncating, because dsh mints ids as `session-<n>` and a fixed
+truncation maps every session to one name; and `git-remote` reads `remote.origin.url` out of the config rather
+than through `git remote get-url`, which applies each machine's own `insteadOf` rewrites and so would defeat
+the point of a cross-machine name.
+
+`sessionPrefix` is a literal string in front of whatever a strategy derives, for making the originating
+machine visible in a shared workspace. It is applied outside the strategy switch and after the `sessions`
+override check, so a pinned name stays exactly as written.
 
 Honcho's guidance is still not to scope sessions too thin: the Deriver needs a single session to accumulate
 enough material to reason over, and both `git-branch` and `per-session` split a project's memory.

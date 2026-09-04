@@ -37,8 +37,15 @@ network failure fall out for free. Secrets are redacted before upload, extensibl
 now.
 
 **Configuration.** Reads the shared `~/.honcho/config.json` under `hosts.dsh`, so memory is shared
-with the other Honcho integrations. Five session-naming strategies, `<peer>-<dir>` by default to
+with the other Honcho integrations. Six session-naming strategies, `<peer>-<dir>` by default to
 match claude-honcho.
+
+**Session naming across machines.** `sessionStrategy: "git-remote"` names the session from the
+repo's `origin` URL, normalized to `host/owner/repo`, so one repo cloned on two machines is one
+session and two projects that share a folder name are not merged. It falls back to `per-directory`
+outside a repo, without an `origin`, or without git. `sessionPrefix` (default empty) puts a literal
+string such as `vps-` in front of every generated name; a name pinned in `sessions` is never
+prefixed.
 
 **Skill.** `honcho-memory`, served from the packaged skills directory.
 

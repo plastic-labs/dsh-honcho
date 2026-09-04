@@ -38,3 +38,16 @@ export function currentBranch(cwd: string): string | undefined {
 export function repoRoot(cwd: string): string | undefined {
   return git(cwd, ["rev-parse", "--show-toplevel"]);
 }
+
+/**
+ * The `origin` remote URL, or undefined outside a repo / without an origin.
+ * git walks up from `cwd` to find the repo itself, so no root resolution is
+ * needed here.
+ *
+ * Read from config rather than `git remote get-url`, which applies each
+ * machine's own `url.<base>.insteadOf` rewrites — the raw configured URL is
+ * what stays comparable across machines.
+ */
+export function originRemote(cwd: string): string | undefined {
+  return git(cwd, ["config", "--get", "remote.origin.url"]);
+}

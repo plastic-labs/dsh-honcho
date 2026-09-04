@@ -71,6 +71,7 @@ behavior.
       "observationMode": "unified", // unified | directional
       "sessionStrategy": "per-directory", // see Sessions below
       "sessionPeerPrefix": true, // session names are <peer>-<dir>
+      "sessionPrefix": "", // literal prefix on every generated name, e.g. "vps-"
       "sessions": { "/path/to/repo": "pinned-session-name" }, // pin a session
       "injection": {
         "sessionStart": ["directives", "summary", "peerCard"], // + representation
@@ -140,7 +141,9 @@ same `workspace` to merge them:
 }
 ```
 
-Keep `peerName` identical across them too, since conclusions are stored per peer.
+Keep `peerName` identical across them too, since conclusions are stored per peer. `sessionStrategy:
+"git-remote"` and `sessionPrefix` are proposed for claude-honcho as well, so a repo worked on from both can be
+pointed at one session on purpose rather than by accident.
 
 ### Sessions
 
@@ -151,9 +154,19 @@ different name for any path with the root `sessions` map — an override always 
 | ------------------------- | ----------------------- | ------------------------------------------------------------------ |
 | `per-directory` (default) | `<peer>-<dir>`          | Stable across restarts and branches                                |
 | `per-repo`                | `<peer>-<repo-root>`    | Same memory from any subdirectory                                  |
+| `git-remote`              | `<peer>-<host-owner-repo>` | From the `origin` URL, so the same repo on two machines is one session. Falls back to `per-directory` outside a repo or without an `origin` |
 | `git-branch`              | `<peer>-<dir>-<branch>` | Falls back to `per-directory` outside a repo or on a detached HEAD |
 | `per-session`             | `<peer>-chat-<id>`      | A clean slate every restart                                        |
 | `global`                  | `<peer>`                | One memory for everything                                          |
+
+`per-directory` and `per-repo` name a session after a folder, so two different projects that both live in a
+`web` directory silently share one memory across machines. `git-remote` is the fix: it reduces the `origin` URL
+to `host/owner/repo`, so `git@github.com:you/web.git` and `https://github.com/you/web` agree, and `you/web` and
+`someone-else/web` do not.
+
+**`sessionPrefix`** puts a literal string in front of every generated name — `"vps-"` gives `vps-you-web` — for
+when the machine a session came from should be visible in it. It applies to every strategy. A name pinned in
+`sessions` is used exactly as written and is never prefixed.
 
 **Prefer the wider scopes.** Honcho's guidance is not to scope sessions too thin: the background Deriver needs
 a single session to accumulate enough material before it can reason well. `git-branch` splits a project's
