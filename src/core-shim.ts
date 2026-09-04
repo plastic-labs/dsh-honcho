@@ -18,7 +18,7 @@
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { readFileSync } from "node:fs";
-import { currentBranch, repoRoot } from "./git.js";
+import { currentBranch, originRemote, repoRoot } from "./git.js";
 
 export const HOST_DEFAULT = "dsh";
 
@@ -33,8 +33,19 @@ export type ObservationMode = "unified" | "directional";
  * single session to accumulate enough material to reason over. `git-branch` and
  * `per-session` both split a project's memory, and `per-session` discards it
  * every restart. `per-directory` is the default for that reason.
+ *
+ * `git-remote` is the wide end: it names the session after the repo's origin
+ * URL, so the same project worked on from two machines lands in one session and
+ * two different projects that share a folder name do not.
  */
-export const SESSION_STRATEGIES = ["per-directory", "per-repo", "git-branch", "per-session", "global"] as const;
+export const SESSION_STRATEGIES = [
+  "per-directory",
+  "per-repo",
+  "git-remote",
+  "git-branch",
+  "per-session",
+  "global",
+] as const;
 export type SessionStrategy = (typeof SESSION_STRATEGIES)[number];
 
 /**
@@ -180,6 +191,7 @@ export interface ResolvedConfig {
   observationMode: ObservationMode;
   sessionStrategy: SessionStrategy;
   sessionPeerPrefix: boolean;
+  sessionPrefix: string;
   sessions: Record<string, string>;
   injection: InjectionConfig;
   capture: CaptureConfig;
@@ -196,6 +208,7 @@ const BUILTIN = {
   timeoutMs: 30_000,
   sessionStrategy: "per-directory" as SessionStrategy,
   sessionPeerPrefix: true,
+  sessionPrefix: "",
   injection: {
     sessionStart: ["directives", "summary", "peerCard"],
     perTurn: ["userContext", "dialectic"],
@@ -242,6 +255,8 @@ interface HostBlock {
   observationMode?: ObservationMode;
   sessionStrategy?: string;
   sessionPeerPrefix?: boolean;
+  /** Literal string in front of every generated name, e.g. `vps-`. */
+  sessionPrefix?: string;
   /** The RFC places pinned session names in the HOST block. Root is read as a
    *  fallback so an existing file keeps working, but the host is authoritative. */
   sessions?: Record<string, string>;
@@ -257,6 +272,7 @@ interface FileConfig {
   timeoutMs?: number;
   auth?: { apiKey?: string };
   enabled?: boolean;
+  sessionPrefix?: string;
   sessions?: Record<string, string>;
   hosts?: Record<string, HostBlock>;
   /** Legal-at-root legacy spelling of auth.apiKey. */
@@ -399,6 +415,7 @@ export function loadConfig(options: LoadOptions = {}): ResolvedConfig {
     sessionStrategy: strategy,
     sessionPeerPrefix: host?.sessionPeerPrefix ?? BUILTIN.sessionPeerPrefix,
     // Host block wins; root is a fallback for files written before the split.
+    sessionPrefix: host?.sessionPrefix ?? file.sessionPrefix ?? BUILTIN.sessionPrefix,
     sessions: host?.sessions ?? file.sessions ?? {},
     injection: {
       ...BUILTIN.injection,
@@ -419,13 +436,27 @@ function sanitize(value: string): string {
 }
 
 /**
+ * A remote URL reduced to `host/owner/repo`, so the two ways of cloning the
+ * same repo — `git@github.com:plastic-labs/dsh-honcho.git` and
+ * `https://github.com/plastic-labs/dsh-honcho` — produce one name.
+ *
+ * Any credentials in a URL go with the `user@` part, so they never reach a
+ * session name.
+ */
+function normalizeRemote(url: string): string {
+  let value = url.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i;
+  // scp syntax (`host:path`) is the no-scheme form, and only there is a colon a
+  // path separator rather than a port.
+  value = scheme.test(value) ? value.replace(scheme, "") : value.replace(":", "/");
+  return value.replace(/^[^/]*@/, "");
+}
+
+/**
  * Honcho session name. Prefix and shape follow claude-honcho's
  * `deriveSessionName` (`plugins/honcho/src/config.ts:778`) so a user's sessions
- * line up across integrations. An explicit `sessions[cwd]` override always wins.
- *
- * `dshSessionId` is only consulted by `per-session`; every other strategy is a
- * pure function of `cwd` plus git state, which is what makes them stable across
- * restarts.
+ * line up across integrations. An explicit `sessions[cwd]` override always wins,
+ * and is used exactly as written — `sessionPrefix` does not apply to it.
  */
 export function sessionName(
   config: ResolvedConfig,
@@ -436,7 +467,17 @@ export function sessionName(
     const override = config.sessions[cwd];
     if (override) return override;
   }
+  return sanitize(config.sessionPrefix) + derivedName(config, cwd, dshSessionId);
+}
 
+/**
+ * The strategy's own name, before `sessionPrefix`.
+ *
+ * `dshSessionId` is only consulted by `per-session`; every other strategy is a
+ * pure function of `cwd` plus git state, which is what makes them stable across
+ * restarts.
+ */
+function derivedName(config: ResolvedConfig, cwd: string | undefined, dshSessionId?: string): string {
   const peer = sanitize(config.peerName);
   const prefix = (rest: string) => (config.sessionPeerPrefix ? `${peer}-${rest}` : rest);
 
@@ -447,6 +488,14 @@ export function sessionName(
     case "per-repo": {
       const root = cwd ? repoRoot(cwd) : undefined;
       return prefix(sanitize(basename(root ?? cwd ?? "unknown")));
+    }
+
+    case "git-remote": {
+      const remote = cwd ? originRemote(cwd) : undefined;
+      // No remote (not a repo, no origin, no git) collapses to the
+      // per-directory name rather than inventing a placeholder that would fork
+      // memory — the same rule git-branch follows.
+      return prefix(remote ? sanitize(normalizeRemote(remote)) : sanitize(basename(cwd ?? "unknown")));
     }
 
     case "git-branch": {
