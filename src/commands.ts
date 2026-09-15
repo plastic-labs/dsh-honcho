@@ -11,6 +11,7 @@ import type { CommandResult } from "@deepseek-ai/dsh-commands/types";
 
 import { sessionUrl, unsupportedComponents, type ResolvedConfig } from "./core-shim.js";
 import type { Capture } from "./capture.js";
+import { validatePeerName } from "./peers.js";
 
 // dsh's registry rejects results without a `kind` discriminator.
 const ok = (text: string): CommandResult => ({ kind: "success", text });
@@ -23,6 +24,15 @@ export interface CommandDeps {
   capture(): Capture | undefined;
   sessionNameFor(cwd: string | undefined): string;
   cwdOf(agent: unknown): string | undefined;
+  /** The dsh session a command was dispatched against — the key every binding
+   *  is stored under. */
+  sessionIdOf(agent: unknown): string | undefined;
+  /** The user peer this dsh session's turns are attributed to. */
+  peerFor(dshSessionId: string | undefined): string;
+  /** True when that peer came from a binding rather than the config. */
+  peerIsBound(dshSessionId: string | undefined): boolean;
+  /** Attribute this dsh session's user turns to `peer` from now on. */
+  bindPeer(dshSessionId: string, peer: string): void;
   /** Timestamp of the last successful memory fetch, or undefined. */
   lastFetchAt(): number | undefined;
   /** Message from the last failed memory fetch, if the latest attempt failed. */
@@ -61,12 +71,49 @@ export interface CommandDefinition {
 export function createCommand(config: ResolvedConfig, deps: CommandDeps): CommandDefinition {
   return {
     name: "honcho",
-    description: "Honcho memory status. `config` shows resolved settings, `flush` syncs now.",
-    input: { hint: "config | flush" },
+    description:
+      "Honcho memory status. `config` shows resolved settings, `flush` syncs now, " +
+      "`peer <name>` attributes this session's turns to another Honcho peer.",
+    input: { hint: "config | flush | peer <name>" },
     async handler({ agent, rawInput }) {
-      const sub = (rawInput ?? "").trim().toLowerCase();
+      const raw = (rawInput ?? "").trim();
+      const sub = raw.toLowerCase();
       const cwd = deps.cwdOf(agent);
+      const dshSessionId = deps.sessionIdOf(agent);
       const name = deps.sessionNameFor(cwd);
+      const peer = deps.peerFor(dshSessionId);
+
+      // `peer` takes an argument, so it is matched on the first word rather
+      // than on the whole line like the argument-free subcommands below.
+      if (sub === "peer" || sub.startsWith("peer ")) {
+        const requested = raw.slice("peer".length).trim();
+        if (!requested) {
+          const origin = deps.peerIsBound(dshSessionId) ? "bound to this session" : "from config";
+          return ok(
+            [
+              `peer  ${peer} (${origin})`,
+              "",
+              "Bind this session to another peer with `/honcho peer <name>`.",
+              "A client driving dsh over the RPC can do that itself:",
+              "`commands/execute { agentId: <sessionId>, line: \"/honcho peer <name>\" }`.",
+            ].join("\n"),
+          );
+        }
+        if (!dshSessionId) {
+          // Bindings are keyed by dsh session id; without one there is nothing
+          // to key, and a process-wide override is what `peerName` already is.
+          return fail("No dsh session on this invocation — set `peerName` in ~/.honcho/config.json instead.");
+        }
+        const valid = validatePeerName(requested);
+        if (!valid.ok) return fail(`Not a usable Honcho peer id: ${valid.reason}.`);
+        deps.bindPeer(dshSessionId, valid.name);
+        // Turns already uploaded keep the peer they were sent under — Honcho has
+        // no reattribution — so say which turns this actually covers.
+        return ok(
+          `This session's user turns are now attributed to \`${valid.name}\` in Honcho session \`${name}\`. ` +
+            "Turns already uploaded keep their original peer.",
+        );
+      }
 
       if (sub === "flush") {
         const capture = deps.capture();
@@ -98,12 +145,15 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
       }
 
       if (sub && sub !== "status") {
-        return fail(`Unknown subcommand \`${sub}\`. Use \`/honcho\`, \`/honcho config\`, or \`/honcho flush\`.`);
+        return fail(
+          `Unknown subcommand \`${sub}\`. Use \`/honcho\`, \`/honcho config\`, \`/honcho flush\`, ` +
+            "or `/honcho peer <name>`.",
+        );
       }
 
       const fetchError = deps.lastFetchError();
       const lines = [
-        `peer         ${config.peerName}`,
+        `peer         ${peer}${deps.peerIsBound(dshSessionId) ? " (bound to this session)" : ""}`,
         `ai peer      ${config.aiPeer}`,
         `workspace    ${config.workspace}`,
         `session      ${name}`,

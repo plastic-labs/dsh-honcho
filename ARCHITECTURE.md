@@ -193,6 +193,39 @@ Global `session/event` listeners see subagent sessions too; scope filtering narr
 (`packages/core/session/src/index.ts:74`). Subagents read the parent's context and write nothing, matching
 `observe_others: true / observe_me: false`.
 
+### Who a turn is attributed to
+
+`peerName` resolves once per process. That holds for a terminal and breaks for a `dsh-web` whose `/api` is
+driven by a human in the browser and by an agent over the RPC: both file under one peer, so the agent's
+phrasing is absorbed into the human's representation and injected back at them.
+
+dsh cannot tell us who is talking. `MessageSourceMap.user` is `{ kind: 'user' }` with no identity
+(`dsh-llm/lib/types/message.d.ts:96`), and `CommandSourceMap` documents the assumption outright — "every
+executor caller is a human-facing UI surface dispatching a human-typed line". OpenClaw reads a `sender_id` the
+harness stamps into each message; there is no equivalent here. `CreateSessionOptions.meta` is a closed shape,
+so there is nowhere to hang a peer on `session/create` either.
+
+So the binding is **declared, not detected**. `/honcho peer <name>` records a peer against the dsh session id,
+and `CommandRuntime` is a `TypertRemoteService` — `commands/execute` is on the wire, keyed by session id
+(`dsh-commands/lib/typert.remote-client.js:35`) — so the client that created the session binds it directly,
+with no model in the loop. Keyed by dsh session id for the same reason cursors are: many dsh sessions map to
+one Honcho session, and "who is driving" belongs to the dsh session.
+
+Two consequences worth stating:
+
+- **Attribution is per message, association is per (session, peer).** `CapturedMessage.peerId` was written by
+  capture and then discarded by the gateway, which re-derived the peer from `role`. It is now honored. The
+  `ensured` set became a `Map<sessionName, Set<peerId>>` at the same time: two dsh sessions with different
+  bound peers resolve to ONE Honcho session name, so a name-only guard associates the first peer and silently
+  skips the second.
+- **The session name does not move.** It stays derived from the configured `peerName`, so both drivers land in
+  one project session as distinct peers rather than forking that project's memory. `observationMode:
+  directional` keeps their representations apart inside it.
+
+Injected memory is still registered once per process (`ctx.systemPrompt.context()` on the plugin root), so with
+two concurrent dsh sessions the most recent fetch wins for both. What is written is correctly attributed; what
+is read back can be the other driver's. A per-agent registration is the fix and is out of scope here.
+
 ---
 
 ## Configuration
@@ -279,9 +312,10 @@ src/core-shim.ts   config resolution + client factory — TEMPORARY, see below
 src/honcho.ts      SDK gateway; observationMode routing lives here
 src/memory.ts      fetch shaping: representation filter, priority assembly
 src/capture.ts     source filter, cursor, debounce, flush
+src/peers.ts       per-dsh-session user peer bindings
 src/redact.ts      ported from claude-honcho
 src/tools.ts       three tools
-src/commands.ts    /honcho, /honcho config, /honcho flush
+src/commands.ts    /honcho, /honcho config, /honcho flush, /honcho peer
 src/git.ts         branch + repo root for session naming (core's job eventually)
 ```
 

@@ -13,6 +13,7 @@ import { clientOptions, sessionName, type ResolvedConfig } from "./core-shim.js"
 import type { HonchoGateway } from "./tools.js";
 import type { CapturedMessage } from "./capture.js";
 import type { SessionContextResult } from "./memory.js";
+import type { PeerBindings } from "./peers.js";
 
 /** Honcho caps messages per request; stay well inside it. */
 const BATCH_LIMIT = 50;
@@ -31,9 +32,10 @@ export interface Gateway extends HonchoGateway {
   upload(sessionName: string, messages: CapturedMessage[]): Promise<void>;
 }
 
-export function createGateway(config: ResolvedConfig): Gateway {
+export function createGateway(config: ResolvedConfig, peers: PeerBindings): Gateway {
   const directional = config.observationMode === "directional";
-  const ensured = new Set<string>();
+  /** Honcho session name → the peer ids this process has already associated. */
+  const associated = new Map<string, Set<string>>();
 
   /**
    * `@honcho-ai/sdk` 2.4.0 caches its workspace get-or-create promise,
@@ -48,10 +50,41 @@ export function createGateway(config: ResolvedConfig): Gateway {
     return (honcho = fresh);
   };
 
-  const userPeer = async (): Promise<Peer> => (await client()).peer(config.peerName);
-  const aiPeer = async (): Promise<Peer> => (await client()).peer(config.aiPeer);
+  /** `peer()` is get-or-create, so memoize by id rather than paying for one
+   *  round trip per message in a batch. */
+  const handles = new Map<string, Promise<Peer>>();
+  const peerHandle = (id: string): Promise<Peer> => {
+    const existing = handles.get(id);
+    if (existing) return existing;
+    const fresh = client().then((h) => h.peer(id));
+    handles.set(id, fresh);
+    return fresh;
+  };
+
+  /** The user peer for one dsh session — its binding, else the configured peer. */
+  const userPeer = (dshSessionId?: string): Promise<Peer> => peerHandle(peers.resolve(dshSessionId));
+  const aiPeer = (): Promise<Peer> => peerHandle(config.aiPeer);
   /** The peer that acts. Unified → the user, observing themselves. */
-  const activePeer = (): Promise<Peer> => (directional ? aiPeer() : userPeer());
+  const activePeer = (dshSessionId?: string): Promise<Peer> =>
+    directional ? aiPeer() : userPeer(dshSessionId);
+
+  /**
+   * Associate peers with a Honcho session, skipping what this process already
+   * added. Tracked per (session, peer) rather than per session: two dsh
+   * sessions with different bound peers resolve to ONE Honcho session name, so
+   * a name-only guard associates the first peer and silently skips the second,
+   * leaving its messages written against a peer the session never admitted.
+   */
+  const associate = async (name: string, peerIds: readonly string[]): Promise<void> => {
+    const seen = associated.get(name) ?? new Set<string>();
+    const missing = peerIds.filter((id) => !seen.has(id));
+    if (missing.length === 0) return;
+    const session = await (await client()).session(name);
+    // addPeers materializes the session server-side and associates the peers.
+    await session.addPeers(await Promise.all(missing.map(peerHandle)));
+    for (const id of missing) seen.add(id);
+    associated.set(name, seen);
+  };
 
   const nameFor = (cwd?: string, dshSessionId?: string): string => sessionName(config, cwd, dshSessionId);
 
@@ -59,18 +92,13 @@ export function createGateway(config: ResolvedConfig): Gateway {
     currentSessionName: nameFor,
 
     async ensureSession(cwd, dshSessionId) {
-      const name = nameFor(cwd, dshSessionId);
-      if (ensured.has(name)) return;
-      const [session, user, ai] = await Promise.all([(await client()).session(name), userPeer(), aiPeer()]);
-      // addPeers materializes the session server-side and associates both peers.
-      await session.addPeers([user, ai]);
-      ensured.add(name);
+      await associate(nameFor(cwd, dshSessionId), [peers.resolve(dshSessionId), config.aiPeer]);
     },
 
     async fetchContext(cwd, dshSessionId, searchQuery) {
       const [session, target, perspective] = await Promise.all([
         (await client()).session(nameFor(cwd, dshSessionId)),
-        userPeer(),
+        userPeer(dshSessionId),
         directional ? aiPeer() : Promise.resolve(undefined),
       ]);
       const result = await session.context({
@@ -101,8 +129,14 @@ export function createGateway(config: ResolvedConfig): Gateway {
     },
 
     async upload(name, messages) {
-      const [session, user, ai] = await Promise.all([(await client()).session(name), userPeer(), aiPeer()]);
-      const built = messages.map((m) => (m.role === "user" ? user : ai).message(m.content));
+      // Each message carries the peer capture resolved for it. Re-deriving that
+      // from `role` here is what made a per-session binding invisible: capture
+      // stamped the right peer and the gateway threw it away.
+      await associate(name, [...new Set(messages.map((m) => m.peerId))]);
+      const session = await (await client()).session(name);
+      const built = await Promise.all(
+        messages.map(async (m) => (await peerHandle(m.peerId)).message(m.content)),
+      );
       for (let i = 0; i < built.length; i += BATCH_LIMIT) {
         await session.addMessages(built.slice(i, i + BATCH_LIMIT));
       }
@@ -112,8 +146,8 @@ export function createGateway(config: ResolvedConfig): Gateway {
       const cfg = config.injection.dialectic;
       const query = cfg.template.replace(/%\{user_query\}/g, userQuery);
       const [peer, target, session] = await Promise.all([
-        activePeer(),
-        directional ? userPeer() : Promise.resolve(undefined),
+        activePeer(dshSessionId),
+        directional ? userPeer(dshSessionId) : Promise.resolve(undefined),
         (await client()).session(nameFor(cwd, dshSessionId)),
       ]);
       const answer = await peer.chat(query, {
@@ -126,8 +160,8 @@ export function createGateway(config: ResolvedConfig): Gateway {
 
     async chat(query, options) {
       const [peer, target, session] = await Promise.all([
-        activePeer(),
-        directional ? userPeer() : Promise.resolve(undefined),
+        activePeer(options.dshSessionId),
+        directional ? userPeer(options.dshSessionId) : Promise.resolve(undefined),
         options.sessionId ? (await client()).session(options.sessionId) : Promise.resolve(undefined),
       ]);
       const answer = await peer.chat(query, {
@@ -145,15 +179,18 @@ export function createGateway(config: ResolvedConfig): Gateway {
       });
     },
 
-    async searchConclusions(query, limit) {
-      const peer = await activePeer();
-      const conclusions = await peer.conclusionsOf(config.peerName).query(query, limit);
+    async searchConclusions(query, limit, dshSessionId) {
+      const peer = await activePeer(dshSessionId);
+      const conclusions = await peer.conclusionsOf(peers.resolve(dshSessionId)).query(query, limit);
       return conclusions.map((c) => `[conclusion:${c.level}] ${c.content.slice(0, 400)}`);
     },
 
-    async remember(content, name) {
-      const [peer, session] = await Promise.all([activePeer(), (await client()).session(name)]);
-      await peer.conclusionsOf(config.peerName).create({ content, sessionId: session.id });
+    async remember(content, name, dshSessionId) {
+      const [peer, session] = await Promise.all([
+        activePeer(dshSessionId),
+        (await client()).session(name),
+      ]);
+      await peer.conclusionsOf(peers.resolve(dshSessionId)).create({ content, sessionId: session.id });
     },
   };
 }

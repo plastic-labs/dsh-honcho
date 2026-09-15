@@ -38,6 +38,7 @@ import { createCapture, type Capture } from "./capture.js";
 import { DIRECTIVES, renderMemory } from "./memory.js";
 import { createTools } from "./tools.js";
 import { createCommand } from "./commands.js";
+import { createPeerBindings } from "./peers.js";
 
 export const name = "honcho";
 
@@ -134,7 +135,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     return;
   }
 
-  const honcho = createGateway(resolved);
+  const peers = createPeerBindings(resolved);
+  const honcho = createGateway(resolved, peers);
   const sessionNameFor = (cwd: string | undefined, dshSessionId?: string) =>
     sessionName(resolved, cwd, dshSessionId);
 
@@ -174,6 +176,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const active = createCapture(resolved, {
         readSession: (id) => sessionQuery.readSession(id) as never,
         honchoSessionName: (cwd, dshSessionId) => sessionNameFor(cwd, dshSessionId),
+        peerFor: (dshSessionId) => peers.resolve(dshSessionId),
         upload: (name, messages) => honcho.upload(name, messages),
         onError: (message) => log(`capture: ${message}`),
       });
@@ -218,6 +221,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   let dialecticInFlight = false;
   let turnCount = 0;
   let lastContext: Awaited<ReturnType<typeof honcho.fetchContext>> = null;
+  /** The peer `lastContext` describes, so a re-render labels it correctly even
+   *  though it happens outside the turn that fetched it. */
+  let lastPeer = resolved.peerName;
 
   if (wantsDirectives) {
     ctx.systemPrompt.section({ name: "honcho:directives", order: DIRECTIVES_ORDER, text: DIRECTIVES });
@@ -249,7 +255,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     try {
       const context = await honcho.fetchContext(cwd, dshSessionId, searchQuery || undefined);
       lastContext = context;
-      const block = renderMemory(resolved, context, [], dialecticText);
+      lastPeer = peers.resolve(dshSessionId);
+      const block = renderMemory(resolved, context, [], dialecticText, lastPeer);
       lastFetchAt = Date.now();
       lastFetchError = undefined;
       if (!block) {
@@ -285,13 +292,13 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   /** The memory block as it currently stands, or "" when there is none. */
   function currentMemoryText(): string {
-    return renderMemory(resolved, lastContext, [], dialecticText)?.text ?? "";
+    return renderMemory(resolved, lastContext, [], dialecticText, lastPeer)?.text ?? "";
   }
 
   /** Re-render from the last fetch, so a late dialectic reaches the prompt
    *  without paying for another context() call. */
   function rerender(): void {
-    const block = renderMemory(resolved, lastContext, [], dialecticText);
+    const block = renderMemory(resolved, lastContext, [], dialecticText, lastPeer);
     if (!block) return;
     disposeMemory?.();
     disposeMemory = ctx.systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_ORDER, text: block.text });
@@ -399,7 +406,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // ── tools ────────────────────────────────────────────────────────────────
 
   if (resolved.injection.tools) {
-    for (const tool of createTools(resolved, honcho)) {
+    for (const tool of createTools(honcho)) {
       ctx.tools.register(tool);
     }
   }
@@ -413,6 +420,10 @@ export function apply(ctx: Context, config: Config = {}): void {
         capture: () => capture,
         sessionNameFor,
         cwdOf: (agent) => (agent as AgentLike)?.session?.header?.cwd,
+        sessionIdOf: (agent) => (agent as AgentLike)?.session?.id,
+        peerFor: (dshSessionId) => peers.resolve(dshSessionId),
+        peerIsBound: (dshSessionId) => peers.isBound(dshSessionId),
+        bindPeer: (dshSessionId, peer) => peers.bind(dshSessionId, peer),
         lastFetchAt: () => lastFetchAt,
         lastFetchError: () => lastFetchError,
         injectionActive: () => disposeMemory !== undefined,

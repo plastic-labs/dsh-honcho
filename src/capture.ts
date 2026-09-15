@@ -110,7 +110,15 @@ export function isHarnessInjected(text: string): boolean {
  * would upload Honcho's own injected memory back into Honcho every turn — a
  * closed loop that degrades the representation.
  */
-export function selectMessages(events: readonly LogEvent[], config: ResolvedConfig): CapturedMessage[] {
+export function selectMessages(
+  events: readonly LogEvent[],
+  config: ResolvedConfig,
+  /** The user peer for THIS dsh session — a binding, else `config.peerName`.
+   *  Passed in rather than read off the config because one process can serve a
+   *  human and an agent at once, and only the caller knows which session this
+   *  slice belongs to. */
+  userPeerId: string,
+): CapturedMessage[] {
   const out: CapturedMessage[] = [];
   // Token budgets converted at the usual ~4 chars/token; the API is chars.
   const userCap = config.messageUpload.maxUserTokens * 4;
@@ -125,7 +133,7 @@ export function selectMessages(events: readonly LogEvent[], config: ResolvedConf
       if (message.source?.kind !== "user") continue;
       const text = extractText(message.content);
       if (!text.trim() || isHarnessInjected(text)) continue;
-      out.push({ role: "user", content: redactSecrets(text.slice(0, userCap), patterns), peerId: config.peerName });
+      out.push({ role: "user", content: redactSecrets(text.slice(0, userCap), patterns), peerId: userPeerId });
       continue;
     }
 
@@ -239,6 +247,8 @@ export interface CaptureDeps {
   readSession(sessionId: string): Promise<{ session?: { cwd?: string }; events?: readonly LogEvent[] }>;
   /** Resolve the Honcho session name for a dsh session. */
   honchoSessionName(cwd: string | undefined, dshSessionId: string): string;
+  /** Resolve the user peer this dsh session's turns are attributed to. */
+  peerFor(dshSessionId: string): string;
   /** Upload. Must throw on failure so the cursor does not advance. */
   upload(sessionName: string, messages: CapturedMessage[]): Promise<void>;
   onError?(message: string): void;
@@ -284,7 +294,7 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
     if (events.length <= sent) return;
 
     const slice = events.slice(sent);
-    const messages = selectMessages(slice, config);
+    const messages = selectMessages(slice, config, deps.peerFor(sessionId));
     pendingCount = messages.length;
 
     if (messages.length === 0) {

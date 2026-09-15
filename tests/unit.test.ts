@@ -27,6 +27,7 @@ afterEach(() => {
   process.env = { ...SAVED_ENV };
 });
 import { isHarnessInjected, readCursor, selectMessages, summarizeTool, writeCursor } from "../src/capture.ts";
+import { createPeerBindings, readBindings, validatePeerName, writeBinding } from "../src/peers.ts";
 import { assembleByPriority, filterRepresentation, renderMemory, trimConclusions } from "../src/memory.ts";
 import { redactSecrets } from "../src/redact.ts";
 
@@ -304,7 +305,7 @@ describe("selectMessages", () => {
     // durable user/message events. Capturing them feeds Honcho's own memory
     // back into Honcho.
     const events = [userEvent("real question"), userEvent("<honcho-memory>…</honcho-memory>", "plugin")];
-    const selected = selectMessages(events, config);
+    const selected = selectMessages(events, config, "vineeth");
     expect(selected).toHaveLength(1);
     expect(selected[0]!.content).toBe("real question");
   });
@@ -313,38 +314,38 @@ describe("selectMessages", () => {
     expect(isHarnessInjected("<system-reminder>\nbackground\n</system-reminder>")).toBe(true);
     expect(isHarnessInjected("[SYSTEM NOTIFICATION - NOT USER INPUT]")).toBe(true);
     expect(isHarnessInjected("what does this repo do?")).toBe(false);
-    expect(selectMessages([userEvent("<task-notification>done</task-notification>")], config)).toHaveLength(0);
+    expect(selectMessages([userEvent("<task-notification>done</task-notification>")], config, "vineeth")).toHaveLength(0);
   });
 
   test("assistant messages unwrap the envelope and use the AI peer", () => {
     const events = [{ type: "assistant/message", data: { message: { content: [{ type: "text", text: "hi" }] } } }];
-    const selected = selectMessages(events, config);
+    const selected = selectMessages(events, config, "vineeth");
     expect(selected[0]).toEqual({ role: "assistant", content: "hi", peerId: "dsh" });
   });
 
   test("secrets are redacted before upload", () => {
-    const selected = selectMessages([userEvent("run with AWS_SECRET_ACCESS_KEY=abc123xyz")], config);
+    const selected = selectMessages([userEvent("run with AWS_SECRET_ACCESS_KEY=abc123xyz")], config, "vineeth");
     expect(selected[0]!.content).toContain("***");
     expect(selected[0]!.content).not.toContain("abc123xyz");
   });
 
   test("empty and unknown events are skipped", () => {
-    expect(selectMessages([{ type: "turn/start", data: {} }, userEvent("   ")], config)).toHaveLength(0);
+    expect(selectMessages([{ type: "turn/start", data: {} }, userEvent("   ")], config, "vineeth")).toHaveLength(0);
   });
 
   test("tool calls are ignored unless saveToolUse is on", () => {
     const call = { type: "tool/call", data: { name: "bash", arguments: JSON.stringify({ command: "pnpm build" }) } };
-    expect(selectMessages([call], config)).toHaveLength(0);
+    expect(selectMessages([call], config, "vineeth")).toHaveLength(0);
 
     const withTools = { ...config, capture: { ...config.capture, saveToolUse: true } } as ResolvedConfig;
-    const selected = selectMessages([call], withTools);
+    const selected = selectMessages([call], withTools, "vineeth");
     expect(selected).toEqual([{ role: "assistant", content: "[tool] ran: pnpm build", peerId: "dsh" }]);
   });
 
   test("malformed logged tool arguments degrade instead of throwing", () => {
     const withTools = { ...config, capture: { ...config.capture, saveToolUse: true } } as ResolvedConfig;
     const call = { type: "tool/call", data: { name: "web_search", arguments: "{not json" } };
-    expect(selectMessages([call], withTools)[0]!.content).toBe("[tool] used web_search");
+    expect(selectMessages([call], withTools, "vineeth")[0]!.content).toBe("[tool] used web_search");
   });
 
   test("secrets in a captured command are redacted too", () => {
@@ -353,7 +354,7 @@ describe("selectMessages", () => {
       type: "tool/call",
       data: { name: "bash", arguments: JSON.stringify({ command: "deploy --token ghp_aaaaaaaaaaaaaaaaaaaaaaaa" }) },
     };
-    expect(selectMessages([call], withTools)[0]!.content).not.toContain("ghp_aaaa");
+    expect(selectMessages([call], withTools, "vineeth")[0]!.content).not.toContain("ghp_aaaa");
   });
 });
 
@@ -586,6 +587,7 @@ test("/honcho results carry the `kind` dsh's registry requires", async () => {
   const command = createCommand(config, {
     capture: noop, sessionNameFor: () => "s", cwdOf: noop, lastFetchAt: noop, lastFetchError: noop,
     injectionActive: () => true, injectionSuppressed: () => false, configFile: () => "",
+    sessionIdOf: () => "session-1", peerFor: () => "p", peerIsBound: () => false, bindPeer: noop,
   });
   for (const input of ["", "config", "flush"]) expect((await command.handler({ agent: {}, rawInput: input })).kind).toBe("success");
   expect((await command.handler({ agent: {}, rawInput: "bogus" })).kind).toBe("error");
@@ -598,6 +600,7 @@ test("flushAll rejects on a failed upload; dispose does not", async () => {
     {
       readSession: async () => ({ session: {}, events: [{ type: "user/message", data: { content: [{ type: "text", text: "hi" }], source: { kind: "user" } } }] }),
       honchoSessionName: () => "s",
+      peerFor: () => "p",
       upload: async () => { throw new Error("fetch failed"); },
     },
   );
@@ -605,4 +608,141 @@ test("flushAll rejects on a failed upload; dispose does not", async () => {
   await expect(capture.flushAll()).rejects.toThrow("fetch failed");
   expect(capture.lastError()).toBe("fetch failed");
   await expect(capture.dispose()).resolves.toBeUndefined();
+});
+
+describe("per-session peer bindings", () => {
+  // The bug: `peerName` resolves once per PROCESS, so a long-lived dsh-web
+  // driven by a human in the browser AND an agent over the /api RPC files both
+  // sets of turns under one peer. The agent's phrasing then lands in the
+  // human's representation and is injected back at them.
+  const config = { peerName: "abigail" } as ResolvedConfig;
+
+  function tmpPeersFile(): string {
+    return join(mkdtempSync(join(tmpdir(), "dsh-peers-")), "peers.json");
+  }
+
+  test("an unbound session keeps the configured peer", () => {
+    const peers = createPeerBindings(config, tmpPeersFile());
+    expect(peers.resolve("session-1")).toBe("abigail");
+    expect(peers.isBound("session-1")).toBe(false);
+  });
+
+  test("two sessions in one process resolve to different peers", () => {
+    const peers = createPeerBindings(config, tmpPeersFile());
+    peers.bind("session-agent", "hermes");
+    expect(peers.resolve("session-agent")).toBe("hermes");
+    // The browser session alongside it is untouched — this is the whole point.
+    expect(peers.resolve("session-browser")).toBe("abigail");
+  });
+
+  test("a binding survives the process that made it", () => {
+    const path = tmpPeersFile();
+    createPeerBindings(config, path).bind("session-agent", "hermes");
+    // A dsh-web restart must not silently revert a bound session to the
+    // configured peer — that is the original misattribution, quietly.
+    expect(createPeerBindings(config, path).resolve("session-agent")).toBe("hermes");
+  });
+
+  test("no dsh session id falls back to the configured peer", () => {
+    expect(createPeerBindings(config, tmpPeersFile()).resolve(undefined)).toBe("abigail");
+  });
+
+  test("a missing or corrupt file reads as unbound instead of throwing", () => {
+    expect(readBindings("/nonexistent/peers.json")).toEqual({});
+    const path = tmpPeersFile();
+    writeFileSync(path, "{not json");
+    expect(createPeerBindings(config, path).resolve("s")).toBe("abigail");
+  });
+
+  test("stale bindings are pruned, the live one is kept", () => {
+    const path = tmpPeersFile();
+    const ancient = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    writeFileSync(path, JSON.stringify({ old: { peer: "gone", at: ancient } }));
+    writeBinding("fresh", "hermes", path);
+    const onDisk = readBindings(path);
+    expect(onDisk["fresh"]?.peer).toBe("hermes");
+    expect(onDisk["old"]).toBeUndefined();
+  });
+
+  test("names Honcho would reject are refused at the command, not at upload", () => {
+    // RESOURCE_NAME_PATTERN is ^[a-zA-Z0-9_-]+$, 1..100. Binding an invalid id
+    // would fail every later upload with a server error nobody can trace back.
+    expect(validatePeerName("hermes")).toEqual({ ok: true, name: "hermes" });
+    expect(validatePeerName("  hermes  ")).toEqual({ ok: true, name: "hermes" });
+    expect(validatePeerName("hermes bot").ok).toBe(false);
+    expect(validatePeerName("hermes@example.com").ok).toBe(false);
+    expect(validatePeerName("").ok).toBe(false);
+    expect(validatePeerName("a".repeat(101)).ok).toBe(false);
+  });
+
+  test("capture stamps the bound peer on user turns and leaves the AI peer alone", () => {
+    const captureConfig = {
+      peerName: "abigail",
+      aiPeer: "dsh",
+      capture: { noisePatterns: [] as string[], saveToolUse: false },
+      messageUpload: { maxUserTokens: 250, maxAssistantTokens: 250 },
+    } as ResolvedConfig;
+    const events = [
+      { type: "user/message", data: { content: [{ type: "text", text: "ship it" }], source: { kind: "user" } } },
+      { type: "assistant/message", data: { message: { content: [{ type: "text", text: "ok" }] } } },
+    ];
+    expect(selectMessages(events, captureConfig, "hermes")).toEqual([
+      { role: "user", content: "ship it", peerId: "hermes" },
+      { role: "assistant", content: "ok", peerId: "dsh" },
+    ]);
+  });
+});
+
+describe("/honcho peer", () => {
+  const config = { injection: { sessionStart: [], perTurn: [] }, capture: {} } as unknown as ResolvedConfig;
+  const noop = () => undefined;
+
+  function command(overrides: Record<string, unknown> = {}) {
+    const bound: Record<string, string> = {};
+    const deps = {
+      capture: noop, sessionNameFor: () => "abigail-repo", cwdOf: noop,
+      lastFetchAt: noop, lastFetchError: noop, injectionActive: () => true,
+      injectionSuppressed: () => false, configFile: () => "",
+      sessionIdOf: () => "session-1",
+      peerFor: (id: string | undefined) => (id && bound[id]) || "abigail",
+      peerIsBound: (id: string | undefined) => Boolean(id && bound[id]),
+      bindPeer: (id: string, peer: string) => { bound[id] = peer; },
+      ...overrides,
+    };
+    return { command: createCommand(config, deps as never), bound };
+  }
+
+  test("binding reports the peer and the session it now writes to", async () => {
+    const { command: cmd, bound } = command();
+    const result = await cmd.handler({ agent: {}, rawInput: "peer hermes" });
+    expect(result.kind).toBe("success");
+    expect(result.text).toContain("hermes");
+    expect(bound["session-1"]).toBe("hermes");
+  });
+
+  test("a bare `peer` reports without binding anything", async () => {
+    const { command: cmd, bound } = command();
+    const result = await cmd.handler({ agent: {}, rawInput: "peer" });
+    expect(result.kind).toBe("success");
+    expect(result.text).toContain("abigail");
+    expect(bound).toEqual({});
+  });
+
+  test("an invalid peer id is refused and nothing is bound", async () => {
+    const { command: cmd, bound } = command();
+    const result = await cmd.handler({ agent: {}, rawInput: "peer not a peer" });
+    expect(result.kind).toBe("error");
+    expect(bound).toEqual({});
+  });
+
+  test("without a dsh session id there is nothing to key a binding on", async () => {
+    const { command: cmd } = command({ sessionIdOf: () => undefined });
+    expect((await cmd.handler({ agent: {}, rawInput: "peer hermes" })).kind).toBe("error");
+  });
+
+  test("the status line marks a bound peer so the attribution is visible", async () => {
+    const { command: cmd } = command({ peerFor: () => "hermes", peerIsBound: () => true });
+    const result = await cmd.handler({ agent: {}, rawInput: "" });
+    expect(result.text).toContain("hermes (bound to this session)");
+  });
 });

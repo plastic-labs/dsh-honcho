@@ -161,11 +161,48 @@ memory per branch, and `per-session` discards it on every restart.
 
 ## Commands
 
-| Command          | Does                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------- |
-| `/honcho`        | Status: peer, workspace, session, strategy, pending uploads, last sync, last fetch |
-| `/honcho config` | Resolved settings, the file they came from, and any ignored injection components   |
-| `/honcho flush`  | Sync now                                                                           |
+| Command              | Does                                                                               |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `/honcho`            | Status: peer, workspace, session, strategy, pending uploads, last sync, last fetch |
+| `/honcho config`     | Resolved settings, the file they came from, and any ignored injection components   |
+| `/honcho flush`      | Sync now                                                                           |
+| `/honcho peer`       | The peer this session's turns are attributed to, and where it came from            |
+| `/honcho peer <name>`| Attribute this session's user turns to another Honcho peer — see below             |
+
+### Attributing a session to another peer
+
+`peerName` is resolved once per process, which is right for a terminal and wrong for a long-lived
+`dsh-web` driven by more than one party — you in the browser, and an agent submitting tasks over the
+`/api` RPC. Both sets of turns would otherwise land on your peer, so the agent's phrasing is absorbed
+into Honcho's representation of *you* and injected back at you next session.
+
+dsh cannot tell us who is talking: a `user/message` carries `source: { kind: "user" }` and no
+identity. So the driver declares itself, once per session:
+
+```
+session/create    → sessionId
+commands/execute  { agentId: <sessionId>, line: "/honcho peer hermes" }
+session/prompt    …
+```
+
+`commands/execute` is on the same RPC surface as `session/create`, and its agent key *is* the session
+id — so a client binds its own sessions directly, with no model in the loop. Bind before the first
+prompt: turns already uploaded keep the peer they were sent under, because Honcho does not
+reattribute messages after the fact.
+
+Bindings are per dsh session, kept in `~/.honcho/dsh/peers.json` so a restart does not silently
+revert a bound session, and aged out after 14 days like cursors. A session with no binding uses
+`peerName` exactly as before — nothing changes for a single-driver install.
+
+The Honcho **session name** is deliberately unaffected: it is derived from the configured `peerName`
+and the directory, so both drivers' turns land in one project session as distinct peers rather than
+forking that project's memory in two. `observationMode: directional` keeps the peers' representations
+separate inside it.
+
+**Known limitation.** Injected memory is registered once per process, so with two dsh sessions
+running concurrently the most recent fetch wins for both. Attribution of what is *written* is
+per-session and correct; what is *read* back can be the other driver's. Fixing that means a
+per-agent context registration, which is a larger change than this one.
 
 ## Requirements
 

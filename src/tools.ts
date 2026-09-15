@@ -14,18 +14,19 @@
  */
 
 import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-ai/dsh-tools";
-import type { ResolvedConfig } from "./core-shim.js";
 
 /** Honcho SDK surface we depend on, narrowed to what these tools call. */
 export interface HonchoGateway {
-  /** Reasoned dialectic answer about a peer. Slow — 2–5 minutes is normal. */
-  chat(query: string, options: { targetPeerId?: string; sessionId?: string }): Promise<string>;
+  /** Reasoned dialectic answer about a peer. Slow — 2–5 minutes is normal.
+   *  `dshSessionId` selects whose peer is asked about; observation routing
+   *  stays inside the gateway. */
+  chat(query: string, options: { dshSessionId?: string; sessionId?: string }): Promise<string>;
   /** Full-text/semantic search over messages. */
   searchMessages(query: string, limit: number): Promise<string[]>;
   /** Semantic search over derived conclusions — the reasoned layer. */
-  searchConclusions(query: string, limit: number): Promise<string[]>;
+  searchConclusions(query: string, limit: number, dshSessionId?: string): Promise<string[]>;
   /** Persist a durable fact about the user. */
-  remember(content: string, sessionName: string): Promise<void>;
+  remember(content: string, sessionName: string, dshSessionId?: string): Promise<void>;
   currentSessionName(cwd?: string, dshSessionId?: string): string;
 }
 
@@ -58,7 +59,7 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function createTools(config: ResolvedConfig, honcho: HonchoGateway): ToolDefinition[] {
+export function createTools(honcho: HonchoGateway): ToolDefinition[] {
   return [
     defineTool({
       name: "honcho_search",
@@ -74,15 +75,18 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
         limit: { type: "number", description: "Results per source (default 5, max 10)." },
       },
       output: textOutput(),
-      async execute(args) {
+      async execute(args, exec) {
         const query = args.query.trim();
         if (!query) return { text: "Search query was empty." };
         const limit = Math.min(Math.max(args.limit ?? 5, 1), 10);
         // Both layers, in parallel. Messages alone miss everything the Deriver
         // and Dreamer inferred; conclusions alone miss what was actually said.
+        const [, dshSessionId] = sessionOf(exec);
         const [messages, conclusions] = await Promise.all([
           honcho.searchMessages(query, limit).catch((e: unknown) => [`[message search failed: ${errText(e)}]`]),
-          honcho.searchConclusions(query, limit).catch((e: unknown) => [`[conclusion search failed: ${errText(e)}]`]),
+          honcho
+            .searchConclusions(query, limit, dshSessionId)
+            .catch((e: unknown) => [`[conclusion search failed: ${errText(e)}]`]),
         ]);
         const lines = [...messages, ...conclusions];
         return { text: lines.length ? lines.join("\n") : "No results in messages or conclusions." };
@@ -106,12 +110,12 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
       async execute(args, exec) {
         const query = args.query.trim();
         if (!query) return { text: "Question was empty." };
-        const sessionName = honcho.currentSessionName(...sessionOf(exec));
-        // observationMode decides who is asking about whom: unified queries the
-        // user peer directly; directional asks from the AI peer's perspective.
-        const targetPeerId = config.observationMode === "directional" ? config.peerName : undefined;
+        const [cwd, dshSessionId] = sessionOf(exec);
+        const sessionName = honcho.currentSessionName(cwd, dshSessionId);
         try {
-          const answer = await honcho.chat(query, { targetPeerId, sessionId: sessionName });
+          // observationMode decides who asks about whom, and the binding decides
+          // WHO is asked about. Both live in the gateway so this stays one call.
+          const answer = await honcho.chat(query, { dshSessionId, sessionId: sessionName });
           return { text: answer.trim() || "Honcho has nothing relevant on that yet." };
         } catch (e) {
           return { text: `Honcho could not answer: ${errText(e)}` };
@@ -136,7 +140,8 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
         const content = args.content.trim();
         if (!content) return { text: "Nothing to remember — `content` was empty." };
         try {
-          await honcho.remember(content, honcho.currentSessionName(...sessionOf(exec)));
+          const [cwd, dshSessionId] = sessionOf(exec);
+          await honcho.remember(content, honcho.currentSessionName(cwd, dshSessionId), dshSessionId);
           return { text: "Saved to Honcho memory." };
         } catch (e) {
           return { text: `Could not save to Honcho: ${errText(e)}` };

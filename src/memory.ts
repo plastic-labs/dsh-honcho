@@ -126,6 +126,10 @@ export function renderMemory(
   warnings: string[],
   /** Latest background dialectic answer, when one has resolved. */
   dialectic?: string | null,
+  /** Whose memory this is. Defaults to the configured peer; a session bound to
+   *  another peer labels the block with that one, so the model is never told
+   *  this is the human's profile when it is the driving agent's. */
+  peerName: string = config.peerName,
 ): MemoryBlock | null {
   if (!context && !dialectic) return null;
   const wanted = new Set(config.injection.sessionStart);
@@ -143,17 +147,17 @@ export function renderMemory(
   // session-start menu. It carries content when peer card and summary are still
   // empty, which is the common state early in a workspace's life.
   if (perTurn.has("dialectic") && dialectic?.trim()) {
-    parts["dialectic"] = `[What Honcho concludes about ${config.peerName}]\n${dialectic.trim()}`;
+    parts["dialectic"] = `[What Honcho concludes about ${peerName}]\n${dialectic.trim()}`;
   }
   if (!context) {
     const body = assembleByPriority(parts, config.injection.contextTokens * 4);
     return body.trim()
-      ? { text: `<honcho-memory peer="${config.peerName}">\n${body}\n</honcho-memory>`, warnings }
+      ? { text: `<honcho-memory peer="${peerName}">\n${body}\n</honcho-memory>`, warnings }
       : null;
   }
 
   if (wantsCard && context.peerCard?.length) {
-    parts["peer-card"] = `[Profile: ${config.peerName}]\n${context.peerCard.join("\n")}`;
+    parts["peer-card"] = `[Profile: ${peerName}]\n${context.peerCard.join("\n")}`;
   }
 
   const summary = typeof context.summary === "string" ? context.summary : context.summary?.content;
@@ -164,7 +168,7 @@ export function renderMemory(
   if (wantsRepresentation && context.peerRepresentation?.trim()) {
     const filtered = filterRepresentation(context.peerRepresentation);
     const trimmed = trimConclusions(filtered, config.injection.maxRenderedConclusions);
-    if (trimmed.trim()) parts["representation"] = `[What Honcho knows about ${config.peerName}]\n${trimmed.trim()}`;
+    if (trimmed.trim()) parts["representation"] = `[What Honcho knows about ${peerName}]\n${trimmed.trim()}`;
   }
 
   // The prompt budget follows the same number that bounds what Honcho returns,
@@ -173,7 +177,7 @@ export function renderMemory(
   if (!body.trim()) return null;
 
   const note = warnings.length ? `\n<!-- honcho: partial (${warnings.join("; ")}) -->` : "";
-  return { text: `<honcho-memory peer="${config.peerName}">\n${body}\n</honcho-memory>${note}`, warnings };
+  return { text: `<honcho-memory peer="${peerName}">\n${body}\n</honcho-memory>${note}`, warnings };
 }
 
 /** Static guidance on how to treat injected memory. Constant for the process,

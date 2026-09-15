@@ -4,6 +4,12 @@
 
 First release. Honcho memory for DeepSeek Harness, as a native Cordis plugin.
 
+**Per-session peer attribution.** `/honcho peer <name>` attributes one dsh session's user turns to a
+different Honcho peer, so a long-lived `dsh-web` driven by both a human and an agent over the `/api`
+RPC no longer files every turn under one peer. `commands/execute` is on the RPC surface and keyed by
+session id, so a client binds its own sessions without the model in the loop. Bindings live in
+`~/.honcho/dsh/peers.json`; a session with no binding uses `peerName` as before.
+
 **Packaging.** `main` and the `.` export now point at a committed root `index.js` that forwards to
 the build in `lib/`, so catalogs that verify a plugin from its git tree can resolve the entry.
 
