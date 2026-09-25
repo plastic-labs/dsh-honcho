@@ -135,7 +135,7 @@ conclusions（结论）。只需一次 API 调用，按字符预算裁剪，并�
 - **`dialectic`**（推理问答）：由 Honcho 推理得出的一段关于你的回答，每隔 `cadence.dialectic` 轮运行一次，并由 `injection.dialectic`
   控制其形式。第一轮之后不会等待它返回，迟到的结果会在下一轮送达。
 
-canonical schema（通用配置规范）中列出、但本插件未实现的组件（`briefing`、`assistantContext`、`sessionContext`）会在启动时报告，而不是被静默丢弃。本插件不处理的配置键（`showContents`、`statusline`、`globalOverride`、细粒度的
+canonical schema（标准配置规范）中列出、但本插件未实现的组件（`briefing`、`assistantContext`、`sessionContext`）会在启动时报告，而不是被静默丢弃。本插件不处理的配置键（`showContents`、`statusline`、`globalOverride`、细粒度的
 `observation`、`multiUser`）以及早期版本之后改过名的键也同样会报告。这里没有任何配置会被接受后又悄悄忽略。
 
 插件自身的 `cordis.yml` 配置只包含底层参数：`configPath`、`apiKeyRef`、`host`、`enabled`。设置 `host`
@@ -207,7 +207,7 @@ bun run build
 本插件的初始设计受到 [@nanpaidashi](https://github.com/nanpaidashi) 的
 [**dsh-honcho-sync**](https://github.com/nanpaidashi/dsh-honcho-sync)（MIT）启发。
 
-`~/.honcho/config.json` 的配置约定、会话命名规则以及 `src/redact.ts` 来自同系列的 Honcho 集成：[claude-honcho](https://github.com/plastic-labs/claude-honcho)、[codex-honcho](https://github.com/plastic-labs/codex-honcho)
+`~/.honcho/config.json` 的配置契约、会话命名规则以及 `src/redact.ts` 来自同系列的 Honcho 集成：[claude-honcho](https://github.com/plastic-labs/claude-honcho)、[codex-honcho](https://github.com/plastic-labs/codex-honcho)
 等。
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 采用 MIT 许可证，正是它的 [Cordis](https://github.com/cordiverse/cordis)
