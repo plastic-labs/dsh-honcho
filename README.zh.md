@@ -1,6 +1,6 @@
 # dsh-honcho
 
-[English](README.md) | 中文
+[English](README.md) | 中文 | [Русский](README.ru.md)
 
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供持久记忆，由 [Honcho](https://honcho.dev)
 驱动。
