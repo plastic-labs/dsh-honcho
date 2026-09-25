@@ -16,13 +16,13 @@ dsh plugin --profile <name> add @honcho-ai/dsh-honcho
 
 Then put your API key and name in `~/.honcho/config.json`:
 
-```jsonc
+```json
 {
   "peerName": "your-name",
   "auth": { "apiKey": "${HONCHO_API_KEY}" },
   "hosts": {
-    "dsh": { "workspace": "dsh" },
-  },
+    "dsh": { "workspace": "dsh" }
+  }
 }
 ```
 
@@ -53,6 +53,9 @@ turn boundaries, before compaction, and on shutdown. Secrets are redacted first.
 Everything behavioral lives in `~/.honcho/config.json` under `hosts.dsh` — the same file `claude-honcho`,
 `codex-honcho`, and the other integrations read. Root holds identity and connection; the host block holds
 behavior.
+
+The file is read as strict JSON: the comments and trailing commas below are annotation only. Leave them in and
+the whole file is skipped without a warning, so every setting falls back to its default.
 
 ```jsonc
 {
@@ -97,7 +100,6 @@ behavior.
       "messageUpload": {
         "maxUserTokens": 6000,
         "maxAssistantTokens": 6000,
-      },
       },
     },
   },
@@ -196,8 +198,7 @@ bun run typecheck
 bun run build
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point, and
-[RUNBOOK.md](RUNBOOK.md) for a throwaway-VM test pass.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point.
 
 ## Credit
 
