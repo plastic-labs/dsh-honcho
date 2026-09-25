@@ -33,7 +33,7 @@ own — the config file is only needed to change defaults.
 
 ## What it does
 
-**Injects what Honcho knows at the start of a session** — your profile, a summary of this project's session so
+**Injects what Honcho knows at the start of a session** — your peer card, a summary of this project's session so
 far, and the conclusions Honcho has drawn that are relevant to what you just asked. One API call, shaped to a
 character budget, refreshed as you work.
 
