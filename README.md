@@ -1,5 +1,7 @@
 # dsh-honcho
 
+English | [中文](README.zh.md)
+
 Persistent memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), powered by
 [Honcho](https://honcho.dev).
 
