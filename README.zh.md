@@ -5,7 +5,7 @@
 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供持久记忆，由 [Honcho](https://honcho.dev)
 驱动。
 
-`dsh` 在会话结束时会忘掉一切。这个插件为它提供不会丢失的记忆：你在做什么、你习惯怎么工作、你上周做了什么决定以及为什么。它与其他
+`dsh` 在会话结束时会忘掉一切。这个插件为它提供不会丢失的记忆：你在做的项目、你习惯怎么工作、你上周做了什么决定以及为什么。它与其他
 Honcho 集成读取同一个 `~/.honcho/config.json`，所有集成只需在一处配置；把其中两个指向同一个 `workspace`，它们就共享同一份记忆。
 
 ## 安装
@@ -30,7 +30,7 @@ dsh plugin --profile <name> add @honcho-ai/dsh-honcho
 
 ## 功能
 
-**会话开始时注入 Honcho 已知的内容**：你的 peer card（用户画像）、本项目会话到目前为止的摘要，以及 Honcho 已得出的、与你刚才提问相关的
+**会话开始时注入 Honcho 已知的内容**：你的用户画像、本项目会话到目前为止的摘要，以及 Honcho 已得出的、与你刚才提问相关的
 conclusions（结论）。只需一次 API 调用，按字符预算裁剪，并在你工作时持续刷新。
 
 **记录每一轮对话。** 用户和助手的消息在后台发送给 Honcho，经过防抖，并在每轮结束时、上下文压缩（compaction）前以及退出时写入。发送前会先对密钥等敏感信息脱敏。
@@ -130,9 +130,9 @@ conclusions（结论）。只需一次 API 调用，按字符预算裁剪，并�
 
 `injection.perTurn` 在你工作时持续刷新：
 
-- **`userContext`**：一份按当前提示词检索的最新 peer 上下文，包含 **representation（表征）+ peer card**。它以你当前的消息作为检索词，因此召回的是相关内容，而不只是最近的内容。它是一个组合包，无论
+- **`userContext`**：一份针对当前提示词的最新 peer 上下文，包含 **representation（表征）+ peer card**。它以你当前的消息作为检索词，因此召回的是语义上相关的内容，而不只是最近的内容。它是一个组合包，无论
   `sessionStart` 中写了什么，都会同时提供两者。如果只想要其中之一，就在 `sessionStart` 中写上它，并设置 `perTurn: []`，代价是失去每轮刷新。
-- **`dialectic`**：由 Honcho 推理得出的一段关于你的回答，每隔 `cadence.dialectic` 轮运行一次，并由 `injection.dialectic`
+- **`dialectic`**（推理问答）：由 Honcho 推理得出的一段关于你的回答，每隔 `cadence.dialectic` 轮运行一次，并由 `injection.dialectic`
   控制其形式。第一轮之后不会等待它返回，迟到的结果会在下一轮送达。
 
 canonical schema（通用配置规范）中列出、但本插件未实现的组件（`briefing`、`assistantContext`、`sessionContext`）会在启动时报告，而不是被静默丢弃。本插件不处理的配置键（`showContents`、`statusline`、`globalOverride`、细粒度的
@@ -175,7 +175,7 @@ canonical schema（通用配置规范）中列出、但本插件未实现的组�
 **`sessionPrefix`** 在每个自动生成的会话名前加上一段固定字符串，例如 `"vps-"` 会得到 `vps-you-web`，适用于希望从会话名看出它来自哪台机器的情况。它对所有策略都生效。在 `sessions`
 中固定的会话名会原样使用，不会加前缀。
 
-**尽量使用范围更大的策略。** Honcho 的建议是不要把会话划分得太细：后台的 Deriver 需要在单个会话中积累足够的材料，才能推理得好。`git-branch` 会按分支拆分项目的记忆，而 `per-session` 每次重启都会丢弃记忆。
+**尽量使用范围更大的策略。** Honcho 的建议是不要把会话划分得太细：后台的 Deriver（推导器）需要在单个会话中积累足够的材料，才能进行有效推理。`git-branch` 会按分支拆分项目的记忆，而 `per-session` 每次重启都会丢弃记忆。
 
 ## 命令
 
@@ -211,7 +211,7 @@ bun run build
 等。
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 采用 MIT 许可证，正是它的 [Cordis](https://github.com/cordiverse/cordis)
-插件模型让我们值得编写原生集成，而不是用钩子做桥接。
+插件模型，让原生集成值得一写，而不必用钩子做桥接。
 
 ## 许可证
 
