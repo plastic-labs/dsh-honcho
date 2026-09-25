@@ -1,5 +1,7 @@
 # dsh-honcho
 
+English | [中文](README.zh.md) | [Русский](README.ru.md)
+
 Persistent memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), powered by
 [Honcho](https://honcho.dev).
 
@@ -16,13 +18,13 @@ dsh plugin --profile <name> add @honcho-ai/dsh-honcho
 
 Then put your API key and name in `~/.honcho/config.json`:
 
-```jsonc
+```json
 {
   "peerName": "your-name",
   "auth": { "apiKey": "${HONCHO_API_KEY}" },
   "hosts": {
-    "dsh": { "workspace": "dsh" },
-  },
+    "dsh": { "workspace": "dsh" }
+  }
 }
 ```
 
@@ -31,7 +33,7 @@ own — the config file is only needed to change defaults.
 
 ## What it does
 
-**Injects what Honcho knows at the start of a session** — your profile, a summary of this project's session so
+**Injects what Honcho knows at the start of a session** — your peer card, a summary of this project's session so
 far, and the conclusions Honcho has drawn that are relevant to what you just asked. One API call, shaped to a
 character budget, refreshed as you work.
 
@@ -53,6 +55,9 @@ turn boundaries, before compaction, and on shutdown. Secrets are redacted first.
 Everything behavioral lives in `~/.honcho/config.json` under `hosts.dsh` — the same file `claude-honcho`,
 `codex-honcho`, and the other integrations read. Root holds identity and connection; the host block holds
 behavior.
+
+The file is read as strict JSON: the comments and trailing commas below are annotation only. Leave them in and
+the whole file is skipped without a warning, so every setting falls back to its default.
 
 ```jsonc
 {
@@ -97,7 +102,6 @@ behavior.
       "messageUpload": {
         "maxUserTokens": 6000,
         "maxAssistantTokens": 6000,
-      },
       },
     },
   },
@@ -196,8 +200,7 @@ bun run typecheck
 bun run build
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point, and
-[RUNBOOK.md](RUNBOOK.md) for a throwaway-VM test pass.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the reasoning behind each extension point.
 
 ## Credit
 
