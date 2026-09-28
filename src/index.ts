@@ -25,10 +25,6 @@ import type {} from "@deepseek-ai/dsh-system-prompt";
 import type {} from "@deepseek-ai/dsh-session-query";
 import type {} from "@deepseek-ai/dsh-commands";
 
-// dsh >= 0.1.7 replaced the catch-all `{ kind: "plugin" }` message source with
-// a merge-extensible map: each producer declares its own kind and consumers
-// fall through unknown kinds. Declare ours the same way in-tree producers
-// (user-approval, ptc-mode, ...) do.
 declare module "@deepseek-ai/dsh-llm" {
   interface MessageSourceMap {
     honcho: { kind: "honcho" } & ContextFormed;
@@ -352,9 +348,6 @@ export function apply(ctx: Context, config: Config = {}): void {
       });
   }
 
-  // dsh >= 0.1.7 fires `agent/created` (create/resume/clear/compact) where
-  // 0.1.2-alpha fired `agent/session-start`. ensureSession is idempotent, so
-  // the superset of triggers is safe. Still emit-only — NOT awaited.
   ctx.on("agent/created", (payload: { agent: AgentLike }): undefined => {
     // Emit, not awaited — so this only starts the write that materializes the
     // session. The read that turn 1 depends on happens in pre-step below.
