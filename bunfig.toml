@@ -8,7 +8,8 @@
 #
 # Scoped deliberately: only @deepseek-ai and @honcho-ai are exempt, and every
 # other dependency still passes the age gate. Two things bound the risk further:
-# every version in package.json is pinned exactly, so a fresh malicious publish
+# every version bun installs here is pinned exactly (the dsh peers are a range,
+# but the devDependencies are not), so a fresh malicious publish
 # cannot be picked up without an explicit edit here; and the @deepseek-ai
 # packages are types-only optional peers, so a bad one fails typecheck rather
 # than shipping.

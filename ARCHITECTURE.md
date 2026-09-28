@@ -4,7 +4,9 @@ How `dsh-honcho` is built, and why each piece is where it is. For usage, see the
 [README](README.md).
 
 Verified against DeepSeek Harness `0.1.2-alpha.3`, `@deepseek-ai/cordis` `4.0.2`, and
-`@honcho-ai/sdk` `2.4.0`. Claims below carry `file:line` where they were checked against source.
+`@honcho-ai/sdk` `2.4.0`. Claims below carry `file:line` where they were checked against source. Since 0.1.2
+the plugin typechecks against dsh `0.2.0-rc.1` and has been run on `0.1.2-rc.1` through `0.2.0-rc.1`, but the
+`file:line` references still point at `0.1.2-alpha.3` and may have drifted.
 
 ---
 
@@ -287,7 +289,7 @@ version produced its data:
 | Header | Value | Where dsh exposes it |
 |---|---|---|
 | `X-Honcho-Host` | `dsh/0.1.5-rc.1 (darwin)` | Nowhere, directly. dsh's CLI reads its own `package.json` only to answer `--version`, and passes nothing to the plugin context, the environment, or the session log. The version is read back off the installation instead: `@deepseek-ai/dsh/package.json`, resolvable because `healProfilesModuleFallback()` symlinks the installation closure into `$DSH_HOME/profiles/node_modules`, which is on a plugin's resolution path. `@deepseek-ai/dsh-session` (lockstep-versioned) is the fallback for a packaged executable, which writes ESM proxies and skips a package with no importable entry. |
-| `X-Honcho-Plugin` | `dsh-honcho/0.1.1` | This package's own `package.json`, read lazily and guarded so a bad relative path cannot stop the plugin loading. |
+| `X-Honcho-Plugin` | `dsh-honcho/0.1.2` | This package's own `package.json`, read lazily and guarded so a bad relative path cannot stop the plugin loading. |
 | `X-Honcho-Agent-Model` | `deepseek/deepseek-chat` | Durable session events: `assistant/message` carries the provenance of what the model actually produced, `request/header` names the configured model one request earlier and on every mid-session switch. Absent until one of them has been seen, and absent again on a turn for a session that has not. |
 
 The client is held across turns, so the model cannot be baked in at construction. `createGateway` takes an
@@ -338,9 +340,17 @@ Everything else routes config through it so the swap is one import edit.
 
 ## Versions
 
-Every dependency is pinned exactly, for two reasons. dsh states "THERE WILL BE COMPATIBILITY-BREAKING CHANGES"
-(`README.md:13`). And the `@deepseek-ai/dsh-*` **`latest` dist-tag is stale** at `0.0.1-rc.1` while the current
-publish is `0.1.2-alpha.3`, so an unpinned install silently gets a months-old placeholder.
+Dependencies and devDependencies are pinned exactly, for two reasons. dsh states "THERE WILL BE
+COMPATIBILITY-BREAKING CHANGES" (`README.md:13`). And the `@deepseek-ai/dsh-*` **`latest` dist-tag is stale** at
+`0.0.1-rc.1` while real releases ship under `alpha` and `next`, so an unpinned install silently gets a
+months-old placeholder.
+
+The `@deepseek-ai/dsh-*` **peers are a range**, `<=0.2.0-rc.1`. From 0.1.7, dsh checks each of them against the
+*running dsh version* before it installs or loads a plugin (`semver.satisfies(..., { includePrerelease: true })`
+in `@deepseek-ai/dsh-app-boot`), so an exact peer pin broke on every prerelease. `includePrerelease` also makes
+the range match every earlier 0.1.x alpha and rc. The cap is the newest dsh actually tested: raise it only
+after a VM run on the new release. dsh does not check `@deepseek-ai/cordis` or `@deepseek-ai/schemastery`, so
+those use tilde ranges.
 
 `getSectionOrder`/`getContextOrder` exist in `0.1.2-alpha.3` but not `0.1.1-rc.2`. Plain order constants are
 used instead — they work on every version and nothing competes for those slots.

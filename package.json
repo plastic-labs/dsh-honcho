@@ -1,6 +1,6 @@
 {
   "name": "@honcho-ai/dsh-honcho",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Honcho memory for DeepSeek Harness — persistent, cross-session memory that survives context resets and restarts.",
   "license": "MIT",
   "type": "module",

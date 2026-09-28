@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2 — 2026-09-28
+
+**dsh 0.1.7 and 0.2.0 support.** 0.1.1 would not install on dsh 0.1.7 or later, and forcing it with
+`dsh plugin allow-version` crashed the first turn of any session that had memory to inject
+(`format v4 message requires a producer-owned source kind`). Session setup now listens for `agent/created`,
+which replaced `agent/session-start` and also fires on resume, clear and compaction. The turn-1 memory message
+declares its own `honcho` source kind in place of the removed catch-all `plugin` kind (#9, #10).
+
+**Peer range instead of exact pins.** From 0.1.7, dsh refuses to install or load a plugin whose
+`@deepseek-ai/dsh-*` peers don't match the running dsh version, so an exact pin broke on every prerelease. The
+peers are now `<=0.2.0-rc.1`, which dsh also matches against every earlier 0.1.x prerelease. Installed and run
+on 0.1.2-rc.1, 0.1.5-rc.1, 0.1.7-rc.1, 0.1.7-rc.2 and 0.2.0-rc.1. cordis and schemastery, which dsh does not
+check, move to `~4.0.2` and `~3.18.2`. The devDependencies stay exact, now at `0.2.0-rc.1`, so the typecheck
+runs against the newest dsh.
+
+**Docs.** Mandarin and Russian READMEs (#11).
+
 ## 0.1.1 — 2026-09-17
 
 **Telemetry.** Every Honcho request now carries `X-Honcho-Host` (`dsh/<harness version> (<platform>)`),
