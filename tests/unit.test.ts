@@ -665,6 +665,7 @@ describe("redactSecrets", () => {
 import { createCommand } from "../src/commands.ts";
 import { telemetryIdentity } from "../src/telemetry.ts";
 import { createCapture } from "../src/capture.ts";
+import { describeError } from "../src/errors.ts";
 
 test("/honcho results carry the `kind` dsh's registry requires", async () => {
   const config = { injection: { sessionStart: [], perTurn: [] }, capture: {} } as unknown as ResolvedConfig;
@@ -692,4 +693,50 @@ test("flushAll rejects on a failed upload; dispose does not", async () => {
   await expect(capture.flushAll()).rejects.toThrow("fetch failed");
   expect(capture.lastError()).toBe("fetch failed");
   await expect(capture.dispose()).resolves.toBeUndefined();
+});
+
+// A failed upload can reject with a plain response object rather than an Error.
+// `String(value)` rendered those as `[object Object]`, hiding the diagnostic.
+
+test("a structured rejection keeps its fields instead of [object Object]", async () => {
+  process.env.HONCHO_CONFIG_DIR = mkdtempSync(join(tmpdir(), "dsh-honcho-capture-"));
+  const capture = createCapture(
+    { peerName: "p", capture: { saveMessages: true, noisePatterns: [] }, messageUpload: { maxUserTokens: 250, maxAssistantTokens: 250 } } as unknown as ResolvedConfig,
+    {
+      readSession: async () => ({ session: {}, events: [{ type: "user/message", data: { content: [{ type: "text", text: "hi" }], source: { kind: "user" } } }] }),
+      honchoSessionName: () => "s",
+      upload: async () => {
+        throw { status: 500, detail: "upstream unavailable" };
+      },
+    },
+  );
+  capture.schedule("session-2");
+  await expect(capture.flushAll()).rejects.toThrow();
+  expect(capture.lastError()).toBe('{"status":500,"detail":"upstream unavailable"}');
+  await capture.dispose();
+});
+
+describe("describeError", () => {
+  test("an Error yields its message", () => {
+    expect(describeError(new Error("boom"))).toBe("boom");
+  });
+
+  test("a plain object is serialized, not stringified", () => {
+    expect(describeError({ status: 400, detail: "bad payload" })).toBe('{"status":400,"detail":"bad payload"}');
+  });
+
+  test("an array of rejections keeps every entry", () => {
+    expect(describeError([{ a: 1 }, { b: 2 }])).toBe('[{"a":1},{"b":2}]');
+  });
+
+  test("an empty or circular value never degrades to [object Object]", () => {
+    expect(describeError(Object.create(null) as object)).not.toBe("[object Object]");
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(describeError(circular)).not.toBe("[object Object]");
+  });
+
+  test("a string passes through", () => {
+    expect(describeError("fetch failed")).toBe("fetch failed");
+  });
 });

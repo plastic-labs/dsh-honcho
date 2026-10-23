@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ResolvedConfig } from "./core-shim.js";
+import { describeError } from "./errors.js";
 import { redactSecrets } from "./redact.js";
 
 export interface CapturedMessage {
@@ -310,7 +311,7 @@ export function createCapture(config: ResolvedConfig, deps: CaptureDeps): Captur
       .catch(() => {})
       .then(() => run(sessionId))
       .catch((e: unknown) => {
-        lastError = e instanceof Error ? e.message : String(e);
+        lastError = describeError(e);
         failures += 1;
         deps.onError?.(lastError);
       })

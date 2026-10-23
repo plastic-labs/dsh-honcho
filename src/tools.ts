@@ -15,6 +15,7 @@
 
 import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { ResolvedConfig } from "./core-shim.js";
+import { describeError } from "./errors.js";
 
 /** Honcho SDK surface we depend on, narrowed to what these tools call. */
 export interface HonchoGateway {
@@ -54,10 +55,6 @@ function sessionOf(exec: ToolRunContext): [cwd: string | undefined, id: string |
   return [session?.header?.cwd, session?.id];
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export function createTools(config: ResolvedConfig, honcho: HonchoGateway): ToolDefinition[] {
   return [
     defineTool({
@@ -81,8 +78,8 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
         // Both layers, in parallel. Messages alone miss everything the Deriver
         // and Dreamer inferred; conclusions alone miss what was actually said.
         const [messages, conclusions] = await Promise.all([
-          honcho.searchMessages(query, limit).catch((e: unknown) => [`[message search failed: ${errText(e)}]`]),
-          honcho.searchConclusions(query, limit).catch((e: unknown) => [`[conclusion search failed: ${errText(e)}]`]),
+          honcho.searchMessages(query, limit).catch((e: unknown) => [`[message search failed: ${describeError(e)}]`]),
+          honcho.searchConclusions(query, limit).catch((e: unknown) => [`[conclusion search failed: ${describeError(e)}]`]),
         ]);
         const lines = [...messages, ...conclusions];
         return { text: lines.length ? lines.join("\n") : "No results in messages or conclusions." };
@@ -114,7 +111,7 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
           const answer = await honcho.chat(query, { targetPeerId, sessionId: sessionName });
           return { text: answer.trim() || "Honcho has nothing relevant on that yet." };
         } catch (e) {
-          return { text: `Honcho could not answer: ${errText(e)}` };
+          return { text: `Honcho could not answer: ${describeError(e)}` };
         }
       },
     }),
@@ -139,7 +136,7 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
           await honcho.remember(content, honcho.currentSessionName(...sessionOf(exec)));
           return { text: "Saved to Honcho memory." };
         } catch (e) {
-          return { text: `Could not save to Honcho: ${errText(e)}` };
+          return { text: `Could not save to Honcho: ${describeError(e)}` };
         }
       },
     }),
