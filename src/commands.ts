@@ -10,6 +10,7 @@
 import type { CommandResult } from "@deepseek-ai/dsh-commands/types";
 
 import { sessionUrl, unsupportedComponents, type ResolvedConfig } from "./core-shim.js";
+import { describeError } from "./errors.js";
 import { hostHeaderValue, pluginHeaderValue, type TelemetryIdentity } from "./telemetry.js";
 import type { Capture } from "./capture.js";
 
@@ -85,7 +86,7 @@ export function createCommand(config: ResolvedConfig, deps: CommandDeps): Comman
           await capture.flushAll();
           return ok(`Flushed to Honcho session \`${name}\`.`);
         } catch (e) {
-          return fail(`Flush failed: ${e instanceof Error ? e.message : String(e)}`);
+          return fail(`Flush failed: ${describeError(e)}`);
         }
       }
 

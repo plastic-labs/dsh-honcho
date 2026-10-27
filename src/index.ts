@@ -45,6 +45,7 @@ import { createCapture, type Capture } from "./capture.js";
 import { DIRECTIVES, renderMemory } from "./memory.js";
 import { createTools } from "./tools.js";
 import { createCommand } from "./commands.js";
+import { describeError } from "./errors.js";
 
 export const name = "honcho";
 
@@ -301,7 +302,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         text: block.text,
       });
     } catch (e) {
-      lastFetchError = e instanceof Error ? e.message : String(e);
+      lastFetchError = describeError(e);
       // Keep the previous registration: stale memory beats none. The failure is
       // visible in `/honcho`, which is why that line exists.
       log(`memory fetch failed: ${lastFetchError}`);
@@ -342,7 +343,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         dialecticText = answer;
         rerender();
       })
-      .catch((e: unknown) => log(`dialectic failed: ${e instanceof Error ? e.message : String(e)}`))
+      .catch((e: unknown) => log(`dialectic failed: ${describeError(e)}`))
       .finally(() => {
         dialecticInFlight = false;
       });
@@ -352,7 +353,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     // Emit, not awaited — so this only starts the write that materializes the
     // session. The read that turn 1 depends on happens in pre-step below.
     void honcho.ensureSession(...sessionOf(payload.agent)).catch((e: unknown) => {
-      log(`session setup failed: ${e instanceof Error ? e.message : String(e)}`);
+      log(`session setup failed: ${describeError(e)}`);
     });
     return undefined;
   });
