@@ -1,5 +1,7 @@
 # dsh-honcho
 
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/plastic-labs/dsh-honcho)
+
 [English](README.md) | [中文](README.zh.md) | Русский
 
 Постоянная память для [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) на базе
