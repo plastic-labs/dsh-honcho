@@ -682,6 +682,50 @@ describe("redactSecrets", () => {
     expect(redactSecrets("curl --token supersecretvalue")).toContain("***");
   });
 
+  // Each row is a format that reached Honcho verbatim before (#14). The needle is the
+  // part that must not survive; every secret here is made up.
+  const leaked: [label: string, text: string, needle: string][] = [
+    ["JSON field", '{"api_key": "zz-SECRET-1-zz"}', "SECRET-1"],
+    ["YAML field", "db:\n  password: hunter2-SECRET-2", "SECRET-2"],
+    ["quoted YAML field", "client_secret: 'SECRET-3 with spaces'", "SECRET-3"],
+    ["prose, Chinese", "密码是 SECRET-4-pass", "SECRET-4"],
+    ["prose, English", "the password is SECRET-5-pass, ok?", "SECRET-5"],
+    ["PEM block", "-----BEGIN RSA PRIVATE KEY-----\nMIIEpSECRET6\nmore\n-----END RSA PRIVATE KEY-----", "SECRET6"],
+    ["PEM block cut off before END", "-----BEGIN PRIVATE KEY-----\nMIIEvSECRET7\nmore", "SECRET7"],
+    ["JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJTRUNSRVQ4In0.SECRET8signature", "SECRET8"],
+    ["X-Api-Key header", "X-Api-Key: SECRET9-abcdefghijkl", "SECRET9"],
+    ["Cookie header", "Cookie: SESSDATA=SECRET10abcdef; other=1", "SECRET10"],
+    ["Google API key", "AIzaSyFAKESECRET11" + "g".repeat(21), "SECRET11"],
+    ["Stripe live key", "sk_live_FAKESECRET12" + "s".repeat(10), "SECRET12"],
+    ["Slack webhook", "https://hooks.slack.com/services/T000/B000/SECRET13" + "w".repeat(10), "SECRET13"],
+    ["Azure AccountKey", "AccountName=a;AccountKey=SECRET14" + "K".repeat(20) + "==;", "SECRET14"],
+    ["Telegram bot token", "123456789:AASECRET15" + "t".repeat(20), "SECRET15"],
+  ];
+
+  test.each(leaked)("redacts %s", (_label, text, needle) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(needle);
+    expect(out).toContain("***");
+  });
+
+  test("redaction keeps the surrounding structure readable", () => {
+    expect(redactSecrets('{"user": "u", "password": "p4ss"}')).toBe('{"user": "u", "password": "***"}');
+    expect(redactSecrets("password: p4ss\nname: demo")).toBe("password: ***\nname: demo");
+  });
+
+  test("lookalikes that are not secrets are left alone", () => {
+    for (const text of [
+      "max_tokens: 4096",
+      "pwd: /home/dev/project",
+      "the token count is low",
+      "reset your password on the settings page",
+      "commit 3f786850e387550fdab836ed7e6dc881de23001b",
+      "https://hooks.example.com/services/health",
+    ]) {
+      expect(redactSecrets(text)).toBe(text);
+    }
+  });
+
   test("user patterns are additive and a bad regex is skipped, not thrown", () => {
     expect(redactSecrets("internal-codename", ["codename"])).toBe("internal-***");
     expect(() => redactSecrets("safe", ["([unclosed"])).not.toThrow();

@@ -38,7 +38,10 @@ far, and the conclusions Honcho has drawn that are relevant to what you just ask
 character budget, refreshed as you work.
 
 **Captures every turn.** User and assistant messages go to Honcho in the background, debounced, and flushed at
-turn boundaries, before compaction, and on shutdown. Secrets are redacted first.
+turn boundaries, before compaction, and on shutdown. Common secret formats are redacted first (API keys and
+tokens, `password:`/`secret:` fields, private keys, JWTs, cookies, connection strings, credential URLs). This is
+regex matching, so it is best-effort: an unusual format, or a bare high-entropy string with no label, can still
+get through. Add your own with `capture.noisePatterns`, or turn capture off with `capture.saveMessages`.
 
 **Gives the model three tools:**
 

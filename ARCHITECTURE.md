@@ -188,6 +188,9 @@ then disabled and injection and tools continue.
 Every captured message is scrubbed before upload, using the rules ported from `claude-honcho/src/redact.ts`
 plus any user `capture.noisePatterns`. A coding harness holds whatever is on screen — pasted keys, `.env`
 contents, customer data — so capture without scrubbing is an exfiltration path, and the two ship together.
+The rules are regexes and therefore best-effort. They cover labeled secrets (`NAME=value`, `"name": "value"`,
+`name: value`), private key blocks, JWTs, cookies, and the common vendor token shapes. A bare 40-character
+AWS secret is not matched: it is indistinguishable from a git hash or any other base64 string.
 
 ### Subagents
 
