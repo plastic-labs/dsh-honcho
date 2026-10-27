@@ -147,10 +147,16 @@ export function createGateway(config: ResolvedConfig, telemetry: () => Telemetry
     async backgroundDialectic(cwd, dshSessionId, userQuery) {
       const cfg = config.injection.dialectic;
       const query = cfg.template.replace(/%\{user_query\}/g, userQuery);
+      // The client is awaited BEFORE the array below, never inside it. An
+      // `await client()` as a later element throws while the array is still being
+      // built, so `Promise.all` never runs and the rejection of `activePeer()`
+      // (which also calls `client()`) has no handler. With Honcho unreachable
+      // that is an unhandled rejection, and it kills the dsh turn.
+      const c = await client();
       const [peer, target, session] = await Promise.all([
         activePeer(),
         directional ? userPeer() : Promise.resolve(undefined),
-        (await client()).session(nameFor(cwd, dshSessionId)),
+        c.session(nameFor(cwd, dshSessionId)),
       ]);
       const answer = await peer.chat(query, {
         ...(target ? { target } : {}),
@@ -161,10 +167,11 @@ export function createGateway(config: ResolvedConfig, telemetry: () => Telemetry
     },
 
     async chat(query, options) {
+      const c = await client();
       const [peer, target, session] = await Promise.all([
         activePeer(),
         directional ? userPeer() : Promise.resolve(undefined),
-        options.sessionId ? (await client()).session(options.sessionId) : Promise.resolve(undefined),
+        options.sessionId ? c.session(options.sessionId) : Promise.resolve(undefined),
       ]);
       const answer = await peer.chat(query, {
         ...(target ? { target } : {}),
@@ -188,7 +195,8 @@ export function createGateway(config: ResolvedConfig, telemetry: () => Telemetry
     },
 
     async remember(content, name) {
-      const [peer, session] = await Promise.all([activePeer(), (await client()).session(name)]);
+      const c = await client();
+      const [peer, session] = await Promise.all([activePeer(), c.session(name)]);
       await peer.conclusionsOf(config.peerName).create({ content, sessionId: session.id });
     },
   };

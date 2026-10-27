@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+**Fixed.** An unreachable Honcho killed the whole dsh turn: dsh exited 1 with no output and
+`fatal load failure: ConnectionError: fetch failed`. In `backgroundDialectic`, `chat` and `remember`,
+`await client()` sat inside a `Promise.all` array after `activePeer()` had already started. It threw while
+the array was still being built, so the rejection of `activePeer()` had no handler and Node ended the process.
+The client is now awaited first, and a Honcho outage costs a turn its memory, not the turn (#12).
+
 ## 0.1.4 — 2026-10-27
 
 **dsh 0.2.1 support.** 0.1.2 would not install on any dsh after 0.2.0-rc.1. dsh rejected it with
