@@ -4,9 +4,8 @@
 
 **Fixed.** The built-in redaction let most common secret formats reach Honcho verbatim: 13 of 16 tested
 (#14). Captured text now also has JSON and YAML secret fields (`"api_key": "…"`, `password: …`), private key
-blocks (including ones cut off before the END line), JWTs, `Cookie` and `X-Api-Key` headers, "the password is …"
-and `密码是 …` prose, Azure `AccountKey` strings, Slack webhook URLs, and Stripe, Google and Telegram tokens
-scrubbed. A bare 40-character AWS secret is still not matched, since it cannot be told apart from a hash.
+blocks, JWTs, `Cookie` and `X-Api-Key` headers, `密码是 …` prose, Azure `AccountKey` strings, Slack webhook URLs,
+and Stripe, Google and Telegram tokens scrubbed. A bare 40-character AWS secret is still not matched, since it cannot be told apart from a hash.
 `max_tokens:` and `pwd:` are left alone.
 
 **Docs.** The README no longer says secrets "are redacted" as a guarantee. It says common formats are, that this

@@ -19,8 +19,12 @@ interface RedactRule {
 }
 
 /** Names that mark a value as secret. `tokens` (as in `max_tokens`) and `pwd` (the shell's
- *  working directory) are deliberately left out of the colon-style rules below. */
-const SECRET_NAME = String.raw`[\w-]*(?:password|passwd|secret|token(?!s)|api[_-]?key|access[_-]?key|credentials?)[\w-]*`;
+ *  working directory) are deliberately left out of the colon-style rules below. The affixes
+ *  are bounded because unbounded `[\w-]*` on both sides backtracks quadratically (tens of seconds on a long word). */
+const SECRET_NAME = String.raw`[\w-]{0,64}(?:password|passwd|secret|token(?!s)|api[_-]?key|access[_-]?key|credentials?)[\w-]{0,64}`;
+
+/** A double-quoted string body, honoring backslash escapes so `"a\"b"` is one value. */
+const DQ = String.raw`"(?:[^"\\]|\\.)*"`;
 
 const DEFAULT_RULES: RedactRule[] = [
   // KEY=value assignments with a secret-bearing key (PGPASSWORD=..., AWS_SECRET_ACCESS_KEY=...)
@@ -51,12 +55,11 @@ const DEFAULT_RULES: RedactRule[] = [
     replacement: "***",
   },
   // ── Formats the first five rules miss ──────────────────────────────────────
-  // Private key blocks, whole and truncated (a message cut by the upload budget has no END line)
+  // Private key blocks
   {
     pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
     replacement: "***",
   },
-  { pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/g, replacement: "***" },
   // JWTs
   {
     pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g,
@@ -64,7 +67,7 @@ const DEFAULT_RULES: RedactRule[] = [
   },
   // JSON fields with a secret-bearing name: "api_key": "…"
   {
-    pattern: new RegExp(String.raw`("${SECRET_NAME}"\s*:\s*)(?:"[^"]*"|[^\s,}\]]+)`, "gi"),
+    pattern: new RegExp(String.raw`("${SECRET_NAME}"\s*:\s*)(?:${DQ}|[^\s,}\]]+)`, "gi"),
     replacement: '$1"***"',
   },
   // YAML / header style: password: …, api-key: …, X-Api-Key: …
@@ -74,8 +77,7 @@ const DEFAULT_RULES: RedactRule[] = [
   },
   // Cookie headers carry session ids under arbitrary names
   { pattern: /\b((?:set-)?cookie\s*:\s*)[^\r\n]+/gi, replacement: "$1***" },
-  // Prose: "password is …", "密码是 …"
-  { pattern: /(\b(?:password|passcode|passwd)\s+is\s+)\S+/gi, replacement: "$1***" },
+  // Prose: "密码是 …"
   { pattern: /((?:密码|口令)\s*(?:是|为|[:：])\s*)\S+/g, replacement: "$1***" },
   // Azure connection strings and SAS keys
   { pattern: /\b((?:AccountKey|SharedAccessKey|SharedAccessSignature)=)[^;\s"']+/gi, replacement: "$1***" },
