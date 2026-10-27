@@ -4,8 +4,8 @@ How `dsh-honcho` is built, and why each piece is where it is. For usage, see the
 [README](README.md).
 
 Verified against DeepSeek Harness `0.1.2-alpha.3`, `@deepseek-ai/cordis` `4.0.2`, and
-`@honcho-ai/sdk` `2.4.0`. Claims below carry `file:line` where they were checked against source. Since 0.1.2
-the plugin typechecks against dsh `0.2.0-rc.1` and has been run on `0.1.2-rc.1` through `0.2.0-rc.1`, but the
+`@honcho-ai/sdk` `2.4.0`. Claims below carry `file:line` where they were checked against source. Since 0.1.4
+the plugin typechecks against dsh `0.2.1-rc.2` and has been run on `0.1.2-rc.1` through `0.2.1-rc.4`, but the
 `file:line` references still point at `0.1.2-alpha.3` and may have drifted.
 
 ---
@@ -345,12 +345,16 @@ COMPATIBILITY-BREAKING CHANGES" (`README.md:13`). And the `@deepseek-ai/dsh-*` *
 `0.0.1-rc.1` while real releases ship under `alpha` and `next`, so an unpinned install silently gets a
 months-old placeholder.
 
-The `@deepseek-ai/dsh-*` **peers are a range**, `<=0.2.0-rc.1`. From 0.1.7, dsh checks each of them against the
-*running dsh version* before it installs or loads a plugin (`semver.satisfies(..., { includePrerelease: true })`
-in `@deepseek-ai/dsh-app-boot`), so an exact peer pin broke on every prerelease. `includePrerelease` also makes
-the range match every earlier 0.1.x alpha and rc. The cap is the newest dsh actually tested: raise it only
-after a VM run on the new release. dsh does not check `@deepseek-ai/cordis` or `@deepseek-ai/schemastery`, so
-those use tilde ranges.
+The `@deepseek-ai/dsh-*` **peers are a floor**, `>=0.1.2-rc.1`, with no cap. From 0.1.7, dsh checks each of them
+against the *running dsh version* before it installs or loads a plugin
+(`semver.satisfies(..., { includePrerelease: true })` in `@deepseek-ai/dsh-app-boot`) and refuses on a mismatch.
+Caps broke installs twice: exact pins on every prerelease, then 0.1.2's `<=0.2.0-rc.1` a day after release, while
+the dsh-plugin.org hub installs into whichever rc the desktop build bundles. The cost of no cap: a dsh release that
+breaks an API this plugin uses is no longer refused at install, it fails at runtime instead (0.1.7's removal of
+`agent/session-start` crashed the first turn). So run the VM pass on each new dsh line and ship a fix release when
+one breaks. Every dsh that checks peers is above the floor; it records the oldest version tested. From 0.2.1, an
+`engines.dsh` field would replace the peer check entirely; it is not used, because older dsh ignores it. dsh does
+not check `@deepseek-ai/cordis` or `@deepseek-ai/schemastery`, so those use tilde ranges.
 
 `getSectionOrder`/`getContextOrder` exist in `0.1.2-alpha.3` but not `0.1.1-rc.2`. Plain order constants are
 used instead — they work on every version and nothing competes for those slots.

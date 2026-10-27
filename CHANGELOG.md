@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.4 — 2026-10-27
+
+**dsh 0.2.1 support.** 0.1.2 would not install on any dsh after 0.2.0-rc.1. dsh rejected it with
+`Plugin @honcho-ai/dsh-honcho@0.1.2 is incompatible with dsh 0.2.1-rc.3`, and 0.2.1-rc.3 is the build the
+dsh-plugin.org hub installs into from the DeepSeek Harness desktop app (#17, #18). #16 widened the
+`@deepseek-ai/dsh-*` peers to admit 0.2.1; they are now a floor, `>=0.1.2-rc.1`, with no cap, so a new dsh
+release no longer locks the plugin out (#19). No dsh API the plugin uses changed between 0.2.0-rc.1 and
+0.2.1-rc.4. Installed on 0.2.1-rc.2, rc.3 and rc.4, and run on rc.4. The devDependencies move to dsh
+`0.2.1-rc.2`, cordis `4.0.5` and schemastery `3.18.5` (#16).
+
+**Fixed.** Failures that `@honcho-ai/sdk` reports as something other than an `Error`, such as a plain response
+object, were logged and shown as `[object Object]`. Capture, the memory fetch, the dialectic, session setup,
+`/honcho flush` and the three tools now print the failure's message or its JSON (#16).
+
+**Fixed.** Memory containing a `{{…}}` group, such as a GitHub Actions `${{ secrets.DEPLOY_TOKEN }}` or a
+Jinja template, made every turn that took a second step fail with `malformed prompt variable reference … in
+context "honcho:memory"`, because dsh interpolates prompt variables in runtime contexts. Memory is now
+registered with `interpolate: false` and reaches the model verbatim. dsh 0.2.1-alpha.2 and later honor the flag;
+earlier dsh ignores it and still fails on such memory (#19).
+
+**No 0.1.3.** The version number is skipped: a repackaged copy of 0.1.2 already reports itself as 0.1.3.
+
 ## 0.1.2 — 2026-09-28
 
 **dsh 0.1.7 and 0.2.0 support.** 0.1.1 would not install on dsh 0.1.7 or later, and forcing it with
