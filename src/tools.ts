@@ -16,6 +16,7 @@
 import { defineTool, type ToolDefinition, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { ResolvedConfig } from "./core-shim.js";
 import { describeError } from "./errors.js";
+import { escapeFence } from "./memory.js";
 
 /** Honcho SDK surface we depend on, narrowed to what these tools call. */
 export interface HonchoGateway {
@@ -81,7 +82,7 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
           honcho.searchMessages(query, limit).catch((e: unknown) => [`[message search failed: ${describeError(e)}]`]),
           honcho.searchConclusions(query, limit).catch((e: unknown) => [`[conclusion search failed: ${describeError(e)}]`]),
         ]);
-        const lines = [...messages, ...conclusions];
+        const lines = [...messages, ...conclusions].map(escapeFence);
         return { text: lines.length ? lines.join("\n") : "No results in messages or conclusions." };
       },
     }),
@@ -109,7 +110,7 @@ export function createTools(config: ResolvedConfig, honcho: HonchoGateway): Tool
         const targetPeerId = config.observationMode === "directional" ? config.peerName : undefined;
         try {
           const answer = await honcho.chat(query, { targetPeerId, sessionId: sessionName });
-          return { text: answer.trim() || "Honcho has nothing relevant on that yet." };
+          return { text: escapeFence(answer.trim()) || "Honcho has nothing relevant on that yet." };
         } catch (e) {
           return { text: `Honcho could not answer: ${describeError(e)}` };
         }

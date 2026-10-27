@@ -15,6 +15,18 @@ export interface SessionContextResult {
   peerCard?: string[] | null;
 }
 
+/**
+ * Defang the memory fence inside stored content.
+ *
+ * Anything Honcho returns can originate from `honcho_remember`, which the model
+ * calls, so a stored `</honcho-memory>` would close the block early and leave
+ * what follows outside the "background, not instructions" framing. The leading
+ * `<` becomes an entity: still readable, no longer a tag.
+ */
+export function escapeFence(text: string): string {
+  return text.replace(/<(\s*\/?\s*honcho-memory)/gi, "&lt;$1");
+}
+
 export interface MemoryBlock {
   text: string;
   /** Non-fatal fetch problems, surfaced in the block as an HTML comment. */
@@ -137,34 +149,35 @@ export function renderMemory(
   // not in what they can carry.
   const wantsCard = wanted.has("peerCard") || perTurn.has("userContext");
   const wantsRepresentation = wanted.has("representation") || perTurn.has("userContext");
+  const peerName = escapeFence(config.peerName).replace(/"/g, "&quot;");
   const parts: Partial<Record<PartKey, string>> = {};
 
   // Dialectic is a per-turn component, so it is gated by `perTurn`, not by the
   // session-start menu. It carries content when peer card and summary are still
   // empty, which is the common state early in a workspace's life.
   if (perTurn.has("dialectic") && dialectic?.trim()) {
-    parts["dialectic"] = `[What Honcho concludes about ${config.peerName}]\n${dialectic.trim()}`;
+    parts["dialectic"] = `[What Honcho concludes about ${peerName}]\n${escapeFence(dialectic.trim())}`;
   }
   if (!context) {
     const body = assembleByPriority(parts, config.injection.contextTokens * 4);
     return body.trim()
-      ? { text: `<honcho-memory peer="${config.peerName}">\n${body}\n</honcho-memory>`, warnings }
+      ? { text: `<honcho-memory peer="${peerName}">\n${body}\n</honcho-memory>`, warnings }
       : null;
   }
 
   if (wantsCard && context.peerCard?.length) {
-    parts["peer-card"] = `[Profile: ${config.peerName}]\n${context.peerCard.join("\n")}`;
+    parts["peer-card"] = `[Profile: ${peerName}]\n${escapeFence(context.peerCard.join("\n"))}`;
   }
 
   const summary = typeof context.summary === "string" ? context.summary : context.summary?.content;
   if (wanted.has("summary") && summary?.trim()) {
-    parts["session-summary"] = `[Session so far]\n${summary.trim()}`;
+    parts["session-summary"] = `[Session so far]\n${escapeFence(summary.trim())}`;
   }
 
   if (wantsRepresentation && context.peerRepresentation?.trim()) {
     const filtered = filterRepresentation(context.peerRepresentation);
     const trimmed = trimConclusions(filtered, config.injection.maxRenderedConclusions);
-    if (trimmed.trim()) parts["representation"] = `[What Honcho knows about ${config.peerName}]\n${trimmed.trim()}`;
+    if (trimmed.trim()) parts["representation"] = `[What Honcho knows about ${peerName}]\n${escapeFence(trimmed.trim())}`;
   }
 
   // The prompt budget follows the same number that bounds what Honcho returns,
@@ -173,7 +186,7 @@ export function renderMemory(
   if (!body.trim()) return null;
 
   const note = warnings.length ? `\n<!-- honcho: partial (${warnings.join("; ")}) -->` : "";
-  return { text: `<honcho-memory peer="${config.peerName}">\n${body}\n</honcho-memory>${note}`, warnings };
+  return { text: `<honcho-memory peer="${peerName}">\n${body}\n</honcho-memory>${note}`, warnings };
 }
 
 /** Static guidance on how to treat injected memory. Constant for the process,
