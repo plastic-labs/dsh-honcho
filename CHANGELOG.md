@@ -1,13 +1,5 @@
 # Changelog
 
-## Unreleased
-
-**Security.** Stored memory could close the `<honcho-memory>` block early. `honcho_remember` content that
-contained `</honcho-memory>` came back verbatim in the peer card, summary, representation and dialectic, so
-whatever followed it sat outside the block that the directives frame as background, not instructions. The
-fence tags are now escaped (`<` becomes `&lt;`) in the injected block and in `honcho_search` and `honcho_chat`
-output (#15).
-
 ## 0.1.4 — 2026-10-27
 
 **dsh 0.2.1 support.** 0.1.2 would not install on any dsh after 0.2.0-rc.1. dsh rejected it with
@@ -27,6 +19,12 @@ Jinja template, made every turn that took a second step fail with `malformed pro
 context "honcho:memory"`, because dsh interpolates prompt variables in runtime contexts. Memory is now
 registered with `interpolate: false` and reaches the model verbatim. dsh 0.2.1-alpha.2 and later honor the flag;
 earlier dsh ignores it and still fails on such memory (#19).
+
+**Security.** Stored memory could close the `<honcho-memory>` block early. `honcho_remember` content that
+contained `</honcho-memory>` came back verbatim in the peer card, summary, representation and dialectic, so
+whatever followed it sat outside the block that the directives frame as background, not instructions. The
+fence tags are now escaped (`<` becomes `&lt;`) in the injected block and in `honcho_search` and `honcho_chat`
+output (#15).
 
 **No 0.1.3.** The version number is skipped: a repackaged copy of 0.1.2 already reports itself as 0.1.3.
 
