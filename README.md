@@ -188,7 +188,7 @@ memory per branch, and `per-session` discards it on every restart.
 ## Requirements
 
 - Node `^22.19.0 || >=24.0.0`
-- A running `dsh`, `0.2.0-rc.1` or earlier (typechecked against `0.2.0-rc.1`; tested on `0.1.2-rc.1` through `0.2.0-rc.1`)
+- A running `dsh`, `0.1.2-rc.1` or later (typechecked against `0.2.1-rc.2`; tested on `0.1.2-rc.1` through `0.2.1-rc.4`)
 - A Honcho API key, or a self-hosted Honcho at `baseUrl`
 
 ## Development

@@ -300,6 +300,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         name: MEMORY_CONTEXT_NAME,
         order: MEMORY_ORDER,
         text: block.text,
+        interpolate: false,
       });
     } catch (e) {
       lastFetchError = describeError(e);
@@ -320,7 +321,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     const block = renderMemory(resolved, lastContext, [], dialecticText);
     if (!block) return;
     disposeMemory?.();
-    disposeMemory = ctx.systemPrompt.context({ name: MEMORY_CONTEXT_NAME, order: MEMORY_ORDER, text: block.text });
+    disposeMemory = ctx.systemPrompt.context({
+      name: MEMORY_CONTEXT_NAME,
+      order: MEMORY_ORDER,
+      text: block.text,
+      interpolate: false,
+    });
   }
 
   /** Fire-and-forget: the dialectic is minutes-slow, so nothing ever waits on
