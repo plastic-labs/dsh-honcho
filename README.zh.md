@@ -1,6 +1,6 @@
 # dsh-honcho
 
-[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/plastic-labs/dsh-honcho)
+[![已收录于 dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/plastic-labs/dsh-honcho)
 
 [English](README.md) | 中文 | [Русский](README.ru.md)
 
