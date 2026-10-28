@@ -10,6 +10,11 @@ and Stripe, Google and Telegram tokens scrubbed. A bare 40-character AWS secret 
 
 **Docs.** The README no longer says secrets "are redacted" as a guarantee. It says common formats are, that this
 is best-effort, and points at `capture.noisePatterns`.
+**Fixed.** An unreachable Honcho killed the whole dsh turn: dsh exited 1 with no output and
+`fatal load failure: ConnectionError: fetch failed`. In `backgroundDialectic`, `chat` and `remember`,
+`await client()` sat inside a `Promise.all` array after `activePeer()` had already started. It threw while
+the array was still being built, so the rejection of `activePeer()` had no handler and Node ended the process.
+The client is now awaited first, and a Honcho outage costs a turn its memory, not the turn (#12).
 
 ## 0.1.4 — 2026-10-27
 
