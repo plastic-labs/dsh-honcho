@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Fixed.** The built-in redaction let most common secret formats reach Honcho verbatim: 13 of 16 tested
+(#14). Captured text now also has JSON and YAML secret fields (`"api_key": "…"`, `password: …`), private key
+blocks, JWTs, `Cookie` and `X-Api-Key` headers, `密码是 …` prose, Azure `AccountKey` strings, Slack webhook URLs,
+and Stripe, Google and Telegram tokens scrubbed. A bare 40-character AWS secret is still not matched, since it cannot be told apart from a hash.
+`max_tokens:` and `pwd:` are left alone.
+
+**Docs.** The README no longer says secrets "are redacted" as a guarantee. It says common formats are, that this
+is best-effort, and points at `capture.noisePatterns`.
 **Fixed.** An unreachable Honcho killed the whole dsh turn: dsh exited 1 with no output and
 `fatal load failure: ConnectionError: fetch failed`. In `backgroundDialectic`, `chat` and `remember`,
 `await client()` sat inside a `Promise.all` array after `activePeer()` had already started. It threw while
