@@ -46,6 +46,7 @@ import { DIRECTIVES, renderMemory } from "./memory.js";
 import { createTools } from "./tools.js";
 import { createCommand } from "./commands.js";
 import { describeError } from "./errors.js";
+import { withRetry } from "./retry.js";
 
 export const name = "honcho";
 
@@ -273,7 +274,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     searchQuery: string,
   ): Promise<void> {
     try {
-      const context = await honcho.fetchContext(cwd, dshSessionId, searchQuery || undefined);
+      const context = await withRetry(
+        () => honcho.fetchContext(cwd, dshSessionId, searchQuery || undefined),
+        "memory fetch",
+        (msg) => log(msg),
+      );
       lastContext = context;
       const block = renderMemory(resolved, context, [], dialecticText);
       lastFetchAt = Date.now();
@@ -342,8 +347,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     const every = Math.max(1, resolved.injection.cadence.dialectic);
     if (turnCount % every !== 1 % every) return undefined;
     dialecticInFlight = true;
-    return honcho
-      .backgroundDialectic(cwd, id, query)
+    return withRetry(
+      () => honcho.backgroundDialectic(cwd, id, query),
+      "dialectic",
+      (msg) => log(msg),
+    )
       .then((answer) => {
         if (!answer) return;
         dialecticText = answer;
