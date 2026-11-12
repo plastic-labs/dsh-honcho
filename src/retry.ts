@@ -1,16 +1,17 @@
 const RETRY_DELAYS_MS = [500, 1000]
 
 const TRANSIENT_PATTERNS = [
-  /fetch failed/i,
   /ECONNREFUSED/,
   /ECONNRESET/,
   /ETIMEDOUT/,
   /ENOTFOUND/,
-  /network/i,
 ]
 
 export function isTransientError(error: unknown): boolean {
   if (error instanceof TypeError) return true
+  const err = error as Record<string, unknown>
+  if (typeof err?.status === "number") return false
+  if (err?.constructor?.name === "ConnectionError") return false
   const msg = error instanceof Error ? error.message : String(error)
   return TRANSIENT_PATTERNS.some((p) => p.test(msg))
 }

@@ -10,7 +10,17 @@ describe("isTransientError", () => {
     expect(isTransientError(new Error("connect ECONNREFUSED 127.0.0.1:80"))).toBe(true)
   })
 
-  test("404 is not transient", () => {
+  test("HTTP error with status is not transient", () => {
+    const err = Object.assign(new Error("network unavailable"), { status: 503 })
+    expect(isTransientError(err)).toBe(false)
+  })
+
+  test("ConnectionError is not transient (SDK already retried)", () => {
+    class ConnectionError extends Error {}
+    expect(isTransientError(new ConnectionError("fetch failed"))).toBe(false)
+  })
+
+  test("HTTP 404 without status property is not transient by message", () => {
     expect(isTransientError(new Error("HTTP 404"))).toBe(false)
   })
 })
@@ -39,27 +49,21 @@ describe("withRetry", () => {
 
   test("throws immediately on non-transient error", async () => {
     let calls = 0
-    try {
-      await withRetry(async () => {
-        calls++
-        throw new Error("HTTP 500")
-      }, "test", () => {})
-      expect.unreachable()
-    } catch (e) {
-      expect(calls).toBe(1)
+    const fn = async () => {
+      calls++
+      throw new Error("HTTP 500")
     }
+    await expect(withRetry(fn, "test", () => {})).rejects.toThrow("HTTP 500")
+    expect(calls).toBe(1)
   })
 
   test("gives up after max retries", async () => {
     let calls = 0
-    try {
-      await withRetry(async () => {
-        calls++
-        throw new TypeError("fetch failed")
-      }, "test", () => {})
-      expect.unreachable()
-    } catch {
-      expect(calls).toBe(3)
+    const fn = async () => {
+      calls++
+      throw new TypeError("fetch failed")
     }
+    await expect(withRetry(fn, "test", () => {})).rejects.toThrow("fetch failed")
+    expect(calls).toBe(3)
   })
 })
